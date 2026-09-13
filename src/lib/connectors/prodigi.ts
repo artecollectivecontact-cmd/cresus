@@ -46,6 +46,8 @@ export const prodigiConnector: Connector = {
     const TOP = 100;
     const BATCHES = 12; // 12 x 100 = 1200 commandes de la fenêtre couvertes
 
+    let anyOk = false; // au moins un appel a répondu (sinon => erreur, pas "0")
+
     // Un lot filtré par date (createdFrom/createdTo), avec timeout individuel.
     const fetchBatch = async (skip: number): Promise<ProdigiOrder[]> => {
       const ctrl = new AbortController();
@@ -63,6 +65,7 @@ export const prodigiConnector: Connector = {
           signal: ctrl.signal,
         });
         if (!res.ok) return [];
+        anyOk = true;
         const data = (await res.json()) as { orders?: ProdigiOrder[] };
         return data.orders ?? [];
       } catch {
@@ -77,6 +80,7 @@ export const prodigiConnector: Connector = {
       // en série qui dépassait le délai sur 30 jours de commandes).
       const skips = Array.from({ length: BATCHES }, (_, i) => i * TOP);
       const batches = await Promise.all(skips.map(fetchBatch));
+      if (!anyOk) return { entries: [], state: "error", detail: "Prodigi injoignable (tous les appels ont échoué)" };
       const entries: LedgerEntry[] = [];
       for (const batch of batches) {
         for (const o of batch) {

@@ -1,5 +1,9 @@
-import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey } from "@/lib/types";
-import { money, pct, dayLabel, signedClass } from "@/lib/format";
+import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak } from "@/lib/types";
+import { money, pct, usd, dayLabel, signedClass } from "@/lib/format";
+
+const REGION_LABELS: Record<string, string> = {
+  US: "🇺🇸 États-Unis", UK: "🇬🇧 Royaume-Uni", EU: "🇪🇺 Europe", Autres: "🌍 Autres",
+};
 
 const COUNTRY_NAMES: Record<string, string> = {
   FR: "France", DE: "Allemagne", IT: "Italie", ES: "Espagne", BE: "Belgique",
@@ -45,14 +49,14 @@ export function PeriodTabs({ value, onChange }: { value: PeriodKey; onChange: (k
 
 // --- Cartes KPI --------------------------------------------------------------
 
-export function KpiRow({ b, currency }: { b: PnLBucket; currency: string }) {
+export function KpiRow({ b, currency, usdPerEur }: { b: PnLBucket; currency: string; usdPerEur: number }) {
   const totalCost = b.cogs + b.fulfillment + b.shipping + b.ads + b.fees + b.expenses + b.refunds;
   const margin = b.revenue > 0 ? b.net / b.revenue : 0;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <Kpi label="Chiffre d'affaires" value={money(b.revenue, currency)} sub={`${b.orders} commandes`} tone="neutral" />
-      <Kpi label="Coûts totaux" value={money(totalCost, currency)} sub="prod + port + pub + frais" tone="neutral" />
-      <Kpi label="Marge nette" value={money(b.net, currency)} sub={pct(margin) + " de marge"} tone={b.net >= 0 ? "pos" : "neg"} />
+      <Kpi label="Chiffre d'affaires" value={money(b.revenue, currency)} usdv={usd(b.revenue, usdPerEur)} sub={`${b.orders} commandes`} tone="neutral" />
+      <Kpi label="Coûts totaux" value={money(totalCost, currency)} usdv={usd(totalCost, usdPerEur)} sub="prod + port + pub + frais" tone="neutral" />
+      <Kpi label="Marge nette" value={money(b.net, currency)} usdv={usd(b.net, usdPerEur)} sub={pct(margin) + " de marge"} tone={b.net >= 0 ? "pos" : "neg"} />
       <Kpi
         label="Verdict"
         value={b.net >= 0 ? "Rentable ✅" : "Déficit ⚠️"}
@@ -63,13 +67,14 @@ export function KpiRow({ b, currency }: { b: PnLBucket; currency: string }) {
   );
 }
 
-function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: string; tone: "pos" | "neg" | "neutral" }) {
+function Kpi({ label, value, usdv, sub, tone }: { label: string; value: string; usdv?: string; sub: string; tone: "pos" | "neg" | "neutral" }) {
   const ring = tone === "pos" ? "border-pos/40" : tone === "neg" ? "border-neg/40" : "border-line";
   const val = tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : "text-white";
   return (
     <div className={`rounded-xl border ${ring} bg-panel p-4`}>
       <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
       <div className={`mt-1 text-2xl font-semibold ${val}`}>{value}</div>
+      {usdv && <div className="text-xs text-muted">≈ {usdv}</div>}
       <div className="mt-1 text-xs text-muted">{sub}</div>
     </div>
   );
@@ -77,35 +82,124 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: s
 
 // --- Graphe journalier (14 derniers jours, agrandi, net dans les barres) -----
 
-export function DailyChart({ daily, currency }: { daily: PnLBucket[]; currency: string }) {
-  const days = daily.slice(-14);
+const RANGE_TITLE: Record<PeriodKey, string> = {
+  day: "Aujourd'hui", week: "7 derniers jours", d14: "14 derniers jours", d30: "30 derniers jours",
+};
+const RANGE_DAYS: Record<PeriodKey, number> = { day: 1, week: 7, d14: 14, d30: 30 };
+
+export function DailyChart({
+  daily,
+  currency,
+  usdPerEur,
+  period,
+  selected,
+  onSelect,
+}: {
+  daily: PnLBucket[];
+  currency: string;
+  usdPerEur: number;
+  period: PeriodKey;
+  selected: string | null;
+  onSelect: (key: string) => void;
+}) {
+  const n = RANGE_DAYS[period];
+  const days = daily.slice(-n);
   const max = Math.max(1, ...days.map((d) => Math.max(d.revenue, Math.abs(d.net))));
+  const showNet = n <= 14; // au-delà, trop serré : on garde le survol
   return (
-    <Panel title="14 derniers jours" subtitle="Barre = chiffre d'affaires · chiffre = marge nette du jour">
-      <div className="flex items-end gap-1.5 h-64">
+    <Panel title={RANGE_TITLE[period]} subtitle="Barre = CA · chiffre = marge nette · clique un jour pour le détail">
+      <div className="flex items-end gap-1 h-64">
         {days.map((d) => {
           const revH = (d.revenue / max) * 100;
+          const active = d.key === selected;
           return (
-            <div key={d.key} className="group relative flex-1 flex flex-col justify-end items-center h-full">
-              {/* net en petit au-dessus de la barre */}
-              <div className={`mb-1 text-[10px] font-semibold leading-none ${signedClass(d.net)}`}>
-                {d.net >= 0 ? "+" : ""}{compact(d.net, currency)}
-              </div>
+            <button
+              key={d.key}
+              onClick={() => onSelect(d.key)}
+              className="group relative flex-1 flex flex-col justify-end items-center h-full min-w-0"
+            >
+              {showNet && (
+                <div className={`mb-1 text-[10px] font-semibold leading-none ${signedClass(d.net)}`}>
+                  {d.net >= 0 ? "+" : ""}{compact(d.net, currency)}
+                </div>
+              )}
               <div
-                className={`w-full rounded-t ${d.net >= 0 ? "bg-accent/50" : "bg-neg/50"} group-hover:opacity-80`}
+                className={`w-full rounded-t transition-opacity ${
+                  d.net >= 0 ? "bg-accent/50" : "bg-neg/50"
+                } ${active ? "ring-2 ring-white/70 opacity-100" : "group-hover:opacity-80"}`}
                 style={{ height: `${Math.max(revH, 1)}%` }}
               />
-              <div className="mt-1 text-[9px] text-muted whitespace-nowrap">{dayLabel(d.key).replace(".", "")}</div>
+              {n <= 14 && (
+                <div className="mt-1 text-[9px] text-muted whitespace-nowrap">{dayLabel(d.key).replace(".", "")}</div>
+              )}
               <div className="pointer-events-none absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap rounded bg-panel-2 border border-line px-2 py-1 text-[11px] z-10">
                 <div className="font-medium">{dayLabel(d.key)}</div>
-                <div>CA {money(d.revenue, currency)}</div>
+                <div>CA {money(d.revenue, currency)} <span className="text-muted">≈ {usd(d.revenue, usdPerEur)}</span></div>
                 <div className={signedClass(d.net)}>Net {money(d.net, currency)}</div>
                 <div className="text-muted">{d.orders} cmd</div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
+      {n > 14 && <p className="mt-2 text-[10px] text-muted">Survole ou clique une barre pour la marge et le détail du jour.</p>}
+    </Panel>
+  );
+}
+
+// --- Détail d'une journée (par région) ---------------------------------------
+
+export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; currency: string; usdPerEur: number }) {
+  const regions = bucket.regions ?? [];
+  return (
+    <Panel title={`Détail — ${dayLabel(bucket.key)}`} subtitle="Postes de dépense par région (cadres inclus dans l'impression)">
+      {regions.length === 0 ? (
+        <p className="text-sm text-muted">Aucun mouvement ce jour-là.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wide text-muted">
+                <th className="py-1 pr-3">Région</th>
+                <th className="py-1 px-2 text-right">CA</th>
+                <th className="py-1 px-2 text-right">Impression</th>
+                <th className="py-1 px-2 text-right">Livraison</th>
+                <th className="py-1 px-2 text-right">Taxes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {regions.map((r) => (
+                <tr key={r.region} className="border-t border-line">
+                  <td className="py-2 pr-3 font-medium">{REGION_LABELS[r.region] ?? r.region}</td>
+                  <td className="py-2 px-2 text-right">{money(r.revenue, currency)}</td>
+                  <td className="py-2 px-2 text-right text-neg">{r.print ? `−${money(r.print, currency)}` : "—"}</td>
+                  <td className="py-2 px-2 text-right text-neg">{r.shipping ? `−${money(r.shipping, currency)}` : "—"}</td>
+                  <td className="py-2 px-2 text-right text-warn">{r.taxes ? money(r.taxes, currency) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Pub (Meta) : globale, pas de région */}
+      <div className="mt-3 flex items-center justify-between rounded-lg bg-panel-2 px-3 py-2 text-sm">
+        <span className="font-medium">Pub Meta (global)</span>
+        <span className="text-neg">{bucket.ads ? `−${money(bucket.ads, currency)} ` : "— "}
+          <span className="text-muted text-xs">≈ {usd(bucket.ads, usdPerEur)}</span>
+        </span>
+      </div>
+
+      <div className="mt-2 flex items-center justify-between px-1 text-sm">
+        <span className="text-muted">Marge nette du jour</span>
+        <span className={`font-semibold ${signedClass(bucket.net)}`}>
+          {money(bucket.net, currency)} <span className="text-muted text-xs font-normal">≈ {usd(bucket.net, usdPerEur)}</span>
+        </span>
+      </div>
+      <p className="mt-2 text-[11px] text-muted">
+        Taxes = TVA collectée + frais Shopify. Les coûts par région sont rattachés à la commande
+        Shopify via sa référence ; ce qui n&apos;est pas rattaché apparaît en « Autres ».
+      </p>
     </Panel>
   );
 }

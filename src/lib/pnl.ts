@@ -7,6 +7,7 @@ import type {
   PnLBucket,
   PnLReport,
   Reconciliation,
+  RegionBreak,
   SourceId,
   SourceStatus,
 } from "./types";
@@ -320,8 +321,41 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
     return { ...e, amountBase: e.amount * rate, baseCurrency: BASE_CURRENCY, fxRate: rate };
   });
 
+  // 5) Rattachement de la région des coûts POD : ces écritures n'ont pas de pays,
+  //    on le déduit de la commande Shopify correspondante (via la référence).
+  const countryByRef = new Map<string, string>();
+  for (const e of normalized) {
+    if (e.kind === "revenue" && e.ref && e.country) countryByRef.set(normRef(e.ref), e.country);
+  }
+  for (const e of normalized) {
+    if (!e.country && e.ref && (e.kind === "cogs" || e.kind === "fulfillment" || e.kind === "shipping")) {
+      const c = countryByRef.get(normRef(e.ref));
+      if (c) e.country = c;
+    }
+  }
+
   dataCache = { at: Date.now(), normalized, statuses, demo };
   return dataCache;
+}
+
+/** Normalise une référence de commande pour le matching (#4683 -> 4683). */
+function normRef(ref: string): string {
+  return ref.trim().replace(/^#/, "").toLowerCase();
+}
+
+// --- Régions -----------------------------------------------------------------
+
+const EU_COUNTRIES = new Set([
+  "FR", "DE", "IT", "ES", "BE", "NL", "AT", "PT", "IE", "LU", "FI", "GR", "SK", "SI",
+  "EE", "LV", "LT", "CY", "MT", "HR", "BG", "RO", "HU", "PL", "CZ", "DK", "SE",
+]);
+
+function regionOf(country?: string): string {
+  if (!country) return "Autres";
+  if (country === "US") return "US";
+  if (country === "GB") return "UK";
+  if (EU_COUNTRIES.has(country)) return "EU";
+  return "Autres";
 }
 
 // --- Helpers d'agrégation par période ---------------------------------------
@@ -368,20 +402,42 @@ function reconcileSums(dated: Dated[], pred: (d: string) => boolean): { accounti
 }
 
 function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[] {
-  const map = new Map<string, { b: PnLBucket; refs: Set<string> }>();
+  const map = new Map<string, { b: PnLBucket; refs: Set<string>; reg: Map<string, RegionBreak> }>();
   for (let i = n - 1; i >= 0; i--) {
     const d = shiftDay(today, -i);
-    map.set(d, { b: emptyBucket(d, `${d}T00:00:00`), refs: new Set() });
+    map.set(d, { b: emptyBucket(d, `${d}T00:00:00`), refs: new Set(), reg: new Map() });
   }
   for (const { e, day } of dated) {
     if (e.reconcileOnly) continue;
     const slot = map.get(day);
     if (!slot) continue;
     addToBucket(slot.b, e, slot.refs);
+
+    // Ventilation régionale (hors pub, qui n'a pas de pays).
+    const v = e.amountBase;
+    const r = regionOf(e.country);
+    const rb = slot.reg.get(r) || { region: r, revenue: 0, print: 0, shipping: 0, taxes: 0 };
+    if (e.kind === "revenue") rb.revenue += v;
+    else if (e.kind === "cogs") rb.print += -v;
+    else if (e.kind === "fulfillment" || e.kind === "shipping") rb.shipping += -v;
+    else if (e.kind === "tax_collected") rb.taxes += v;
+    else if (e.kind === "fees") rb.taxes += -v;
+    slot.reg.set(r, rb);
   }
   return [...map.values()]
-    .map(({ b, refs }) => {
+    .map(({ b, refs, reg }) => {
       finalizeBucket(b, refs.size);
+      const order: Record<string, number> = { US: 0, UK: 1, EU: 2, Autres: 3 };
+      b.regions = [...reg.values()]
+        .map((r) => ({
+          region: r.region,
+          revenue: round2(r.revenue),
+          print: round2(r.print),
+          shipping: round2(r.shipping),
+          taxes: round2(r.taxes),
+        }))
+        .filter((r) => r.revenue !== 0 || r.print !== 0 || r.shipping !== 0 || r.taxes !== 0)
+        .sort((a, b) => (order[a.region] ?? 9) - (order[b.region] ?? 9));
       return b;
     })
     .sort((a, b) => a.key.localeCompare(b.key));
@@ -411,8 +467,14 @@ export async function buildReport(): Promise<PnLReport> {
   const rec = reconcileSums(dated, (d) => d >= from(30));
   const reconciliation = buildReconciliation(opCosts, rec.accounting, rec.bank, statuses);
 
+  // Taux EUR -> USD (fx.rate("USD") = EUR par USD).
+  const fx = await getConverter();
+  const usdEur = fx.rate("USD");
+  const usdPerEur = usdEur > 0 ? round2(1 / usdEur) : 1.08;
+
   return {
     currency: BASE_CURRENCY,
+    usdPerEur,
     daily,
     periods,
     sources: statuses,

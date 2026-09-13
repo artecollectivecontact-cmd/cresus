@@ -7,6 +7,7 @@ import {
   PeriodTabs,
   KpiRow,
   DailyChart,
+  DayDetail,
   SourceBreakdown,
   TaxPanel,
   ReconciliationPanel,
@@ -19,6 +20,7 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<PeriodKey>("day");
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const started = useRef(false);
 
   useEffect(() => {
@@ -74,6 +76,8 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
   }
 
   const slice = report.periods[period];
+  const detailKey = selectedDay ?? report.daily[report.daily.length - 1]?.key ?? null;
+  const detailBucket = report.daily.find((d) => d.key === detailKey) ?? null;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-6" style={{ paddingInline: "max(16px, env(safe-area-inset-left))" }}>
@@ -112,13 +116,27 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
 
       {/* KPI de la période */}
       <div className="mb-5">
-        <KpiRow b={slice.bucket} currency={report.currency} />
+        <KpiRow b={slice.bucket} currency={report.currency} usdPerEur={report.usdPerEur} />
       </div>
 
-      {/* Graphe 14 jours (pleine largeur) */}
+      {/* Graphe (suit la période) — pleine largeur, cliquable */}
       <div className="mb-4">
-        <DailyChart daily={report.daily} currency={report.currency} />
+        <DailyChart
+          daily={report.daily}
+          currency={report.currency}
+          usdPerEur={report.usdPerEur}
+          period={period}
+          selected={detailKey}
+          onSelect={setSelectedDay}
+        />
       </div>
+
+      {/* Détail du jour sélectionné (par région) */}
+      {detailBucket && (
+        <div className="mb-4">
+          <DayDetail bucket={detailBucket} currency={report.currency} usdPerEur={report.usdPerEur} />
+        </div>
+      )}
 
       {/* Par source (période) + TVA en dessous */}
       <div className="mb-4">

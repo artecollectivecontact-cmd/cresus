@@ -12,6 +12,15 @@ export function pct(n: number): string {
   return `${(n * 100).toFixed(1)} %`;
 }
 
+/** Équivalent USD d'un montant EUR (affichage secondaire, sans décimales). */
+export function usd(eur: number, usdPerEur: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(eur * usdPerEur);
+}
+
 export function dayLabel(key: string): string {
   // key = "YYYY-MM-DD"
   const [y, m, d] = key.split("-").map(Number);

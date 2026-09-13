@@ -88,6 +88,20 @@ export interface PnLBucket {
   /** Nombre de commandes (écritures de type revenue distinctes par ref). */
   orders: number;
   currency: Currency;
+  /** Détail par région (US/UK/EU/Autres) — présent sur les buckets journaliers. */
+  regions?: RegionBreak[];
+}
+
+/** Ventilation d'une journée par région géographique. */
+export interface RegionBreak {
+  region: string; // "US" | "UK" | "EU" | "Autres"
+  revenue: number;
+  /** Coût d'impression (COGS, cadres inclus). */
+  print: number;
+  /** Livraison (fulfillment + port). */
+  shipping: number;
+  /** Taxes : TVA collectée + frais Shopify. */
+  taxes: number;
 }
 
 export type PeriodKey = "day" | "week" | "d14" | "d30";
@@ -104,6 +118,8 @@ export interface PeriodSlice {
 
 export interface PnLReport {
   currency: Currency;
+  /** Taux EUR -> USD pour afficher les montants aussi en dollars. */
+  usdPerEur: number;
   /** Un bucket par jour (30 derniers jours), du plus ancien au plus récent. */
   daily: PnLBucket[];
   /** Agrégats prêts à l'emploi par période — bascule côté client sans recharger. */
