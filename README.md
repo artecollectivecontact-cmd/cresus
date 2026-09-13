@@ -77,7 +77,7 @@ Le repo est prêt (branche `main`). Étapes :
 
 | Source | État | Ce qu'il manque pour le direct |
 |---|---|---|
-| Shopify | ✅ live-ready | `SHOPIFY_SHOP` + `SHOPIFY_ADMIN_TOKEN` (scope `read_orders`) |
+| Shopify | ✅ live-ready | `SHOPIFY_SHOP` + soit `SHOPIFY_CLIENT_ID`/`SHOPIFY_CLIENT_SECRET` (Dev Dashboard, recommandé), soit `SHOPIFY_ADMIN_TOKEN` (scope `read_orders`) |
 | Printify | ✅ live-ready | `PRINTIFY_API_TOKEN` |
 | Prodigi | ✅ live-ready | `PRODIGI_API_KEY` |
 | Qonto | ✅ live-ready | `QONTO_LOGIN` + `QONTO_SECRET_KEY` |
