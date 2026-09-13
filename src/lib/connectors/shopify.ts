@@ -180,7 +180,11 @@ export const shopifyConnector: Connector = {
 
       return { entries, state: "live", detail: `${entries.length} écritures` };
     } catch (e) {
-      return { entries: [], state: "error", detail: (e as Error).message };
+      const msg = (e as Error).message;
+      // Accès refusé / non autorisé : le token en cache est peut-être périmé
+      // (scope ajouté depuis). On le jette pour en redemander un frais.
+      if (/ACCESS_DENIED|401|403/.test(msg)) tokenCache = null;
+      return { entries: [], state: "error", detail: msg };
     }
   },
 };

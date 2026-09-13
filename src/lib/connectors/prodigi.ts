@@ -28,29 +28,41 @@ export const prodigiConnector: Connector = {
       return { entries: [], state: "stub", detail: "clé absente (PRODIGI_API_KEY)" };
     }
     const key = process.env.PRODIGI_API_KEY!;
-    try {
-      const from = new Date(range.from).getTime();
-      const to = new Date(range.to).getTime();
-      const entries: LedgerEntry[] = [];
-      let skip = 0;
-      let guard = 0;
-      const TOP = 100;
-      // Commandes renvoyées de la plus récente à la plus ancienne : on s'arrête
-      // dès qu'un lot ne contient plus rien dans la période (évite de scanner
-      // tout l'historique et de dépasser le délai). Plafond de sécurité: 15 lots.
-      let reachedOlder = false;
-      while (!reachedOlder && guard++ < 15) {
+    const from = new Date(range.from).getTime();
+    const to = new Date(range.to).getTime();
+    const TOP = 100;
+    const BATCHES = 8; // 8 lots de 100 = 800 commandes récentes couvertes
+
+    // Un lot Prodigi, avec timeout individuel pour ne jamais bloquer.
+    const fetchBatch = async (skip: number): Promise<ProdigiOrder[]> => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      try {
         const res = await fetch(`${BASE}/orders?top=${TOP}&skip=${skip}`, {
           headers: { "X-API-Key": key },
           cache: "no-store",
+          signal: ctrl.signal,
         });
-        if (!res.ok) throw new Error(`Prodigi HTTP ${res.status}`);
+        if (!res.ok) return [];
         const data = (await res.json()) as { orders: ProdigiOrder[] };
-        const batch = data.orders ?? [];
-        let anyInRangeOrNewer = false;
+        return data.orders ?? [];
+      } catch {
+        return [];
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    try {
+      // Commandes triées de la plus récente à la plus ancienne : on récupère les
+      // BATCHES premiers lots EN PARALLÈLE (au lieu d'une boucle en série qui
+      // dépassait le délai), puis on filtre par date.
+      const skips = Array.from({ length: BATCHES }, (_, i) => i * TOP);
+      const batches = await Promise.all(skips.map(fetchBatch));
+      const entries: LedgerEntry[] = [];
+      for (const batch of batches) {
         for (const o of batch) {
           const ts = new Date(o.created).getTime();
-          if (!isNaN(ts) && ts >= from) anyInRangeOrNewer = true;
           if (isNaN(ts) || ts < from || ts >= to) continue;
           const charge = o.charges?.[0]?.totalCost;
           const cost = charge ? Number(charge.amount) : 0;
@@ -67,9 +79,6 @@ export const prodigiConnector: Connector = {
             });
           }
         }
-        if (batch.length < TOP) break;
-        if (!anyInRangeOrNewer) reachedOlder = true;
-        skip += TOP;
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
     } catch (e) {
