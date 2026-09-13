@@ -1,19 +1,13 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { buildReport } from "@/lib/pnl";
 
-// Rapport P&L en JSON. Ex: /api/pnl?days=14&focusDay=2026-09-13
+// Rapport P&L en JSON (toutes périodes pré-calculées). Ex: /api/pnl
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const days = Number(searchParams.get("days") ?? 14);
-  const focusDay = searchParams.get("focusDay") ?? undefined;
+export async function GET() {
   try {
-    const report = await buildReport({
-      days: Number.isFinite(days) ? Math.min(Math.max(days, 1), 90) : 14,
-      focusDay: focusDay || undefined,
-    });
+    const report = await buildReport();
     return NextResponse.json(report);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });

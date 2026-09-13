@@ -90,23 +90,27 @@ export interface PnLBucket {
   currency: Currency;
 }
 
+export type PeriodKey = "day" | "week" | "d14" | "d30";
+export type BySource = Record<SourceId, { net: number; revenue: number; cost: number }>;
+
+/** Tout ce qu'il faut pour afficher une période (jour, semaine, 14j, 30j). */
+export interface PeriodSlice {
+  key: PeriodKey;
+  label: string;
+  bucket: PnLBucket;
+  bySource: BySource;
+  tax: TaxProjection;
+}
+
 export interface PnLReport {
   currency: Currency;
-  /** Bucket agrégé sur toute la période demandée. */
-  total: PnLBucket;
-  /** Un bucket par jour, du plus ancien au plus récent. */
+  /** Un bucket par jour (30 derniers jours), du plus ancien au plus récent. */
   daily: PnLBucket[];
-  /** Un bucket par heure pour le jour ciblé (`focusDay`). */
-  hourly: PnLBucket[];
-  /** Jour ciblé pour la vue horaire (YYYY-MM-DD). */
-  focusDay: string;
-  /** Répartition par source sur la période. */
-  bySource: Record<SourceId, { net: number; revenue: number; cost: number }>;
+  /** Agrégats prêts à l'emploi par période — bascule côté client sans recharger. */
+  periods: Record<PeriodKey, PeriodSlice>;
   /** État de chaque connecteur (branché ? en direct ? erreur ?). */
   sources: SourceStatus[];
-  /** Projection fiscale sur la période. */
-  tax: TaxProjection;
-  /** Rapprochement comptable/bancaire (recoupe la marge opérationnelle). */
+  /** Rapprochement comptable/bancaire (recoupe la marge opérationnelle, 30j). */
   reconciliation: Reconciliation;
   /** true si le rapport utilise des données de démonstration (pas de clés API). */
   demo: boolean;

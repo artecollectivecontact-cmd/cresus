@@ -1,5 +1,4 @@
-import Link from "next/link";
-import type { PnLBucket, PnLReport, SourceStatus } from "@/lib/types";
+import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey } from "@/lib/types";
 import { money, pct, dayLabel, signedClass } from "@/lib/format";
 
 const COUNTRY_NAMES: Record<string, string> = {
@@ -7,6 +6,42 @@ const COUNTRY_NAMES: Record<string, string> = {
   NL: "Pays-Bas", AT: "Autriche", PT: "Portugal", IE: "Irlande", LU: "Luxembourg",
   GB: "Royaume-Uni", US: "États-Unis", CH: "Suisse", "??": "Inconnu",
 };
+
+const SOURCE_LABELS: Record<string, string> = {
+  shopify: "Shopify", printify: "Printify", prodigi: "Prodigi", artelo: "Artelo",
+  qonto: "Qonto", pennylane: "Pennylane", meta: "Meta Ads",
+};
+
+/** Montant compact pour les petits labels (pas de décimales). */
+function compact(n: number, currency: string): string {
+  return money(Math.round(n), currency);
+}
+
+// --- Sélecteur de période ----------------------------------------------------
+
+export function PeriodTabs({ value, onChange }: { value: PeriodKey; onChange: (k: PeriodKey) => void }) {
+  const tabs: { key: PeriodKey; label: string }[] = [
+    { key: "day", label: "Jour" },
+    { key: "week", label: "Semaine" },
+    { key: "d14", label: "14 jours" },
+    { key: "d30", label: "30 jours" },
+  ];
+  return (
+    <div className="inline-flex rounded-lg border border-line bg-panel p-1 text-sm">
+      {tabs.map((t) => (
+        <button
+          key={t.key}
+          onClick={() => onChange(t.key)}
+          className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+            value === t.key ? "bg-accent text-ink" : "text-muted hover:text-white"
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // --- Cartes KPI --------------------------------------------------------------
 
@@ -21,7 +56,7 @@ export function KpiRow({ b, currency }: { b: PnLBucket; currency: string }) {
       <Kpi
         label="Verdict"
         value={b.net >= 0 ? "Rentable ✅" : "Déficit ⚠️"}
-        sub={b.net >= 0 ? "la journée est dans le vert" : "journée dans le rouge"}
+        sub={b.net >= 0 ? "dans le vert" : "dans le rouge"}
         tone={b.net >= 0 ? "pos" : "neg"}
       />
     </div>
@@ -40,71 +75,34 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: s
   );
 }
 
-// --- Graphe horaire ----------------------------------------------------------
+// --- Graphe journalier (14 derniers jours, agrandi, net dans les barres) -----
 
-export function HourlyChart({ hourly, currency }: { hourly: PnLBucket[]; currency: string }) {
-  const max = Math.max(1, ...hourly.map((h) => Math.max(h.revenue, Math.abs(h.net))));
+export function DailyChart({ daily, currency }: { daily: PnLBucket[]; currency: string }) {
+  const days = daily.slice(-14);
+  const max = Math.max(1, ...days.map((d) => Math.max(d.revenue, Math.abs(d.net))));
   return (
-    <Panel title="Rentabilité heure par heure" subtitle="CA (barre) et marge nette (point) — fuseau Europe/Paris">
-      <div className="flex items-end gap-[3px] h-44">
-        {hourly.map((h) => {
-          const hour = Number(h.key.slice(-2));
-          const revH = (h.revenue / max) * 100;
-          const netH = (Math.abs(h.net) / max) * 100;
-          return (
-            <div key={h.key} className="group relative flex-1 flex flex-col justify-end items-center h-full">
-              <div className="w-full rounded-t bg-accent/30 group-hover:bg-accent/50 transition-colors" style={{ height: `${revH}%` }} />
-              {h.net !== 0 && (
-                <div
-                  className={`absolute w-full ${h.net >= 0 ? "bg-pos" : "bg-neg"}`}
-                  style={{ height: "2px", bottom: `${netH}%` }}
-                />
-              )}
-              <div className="pointer-events-none absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap rounded bg-panel-2 border border-line px-2 py-1 text-[11px] z-10">
-                <div className="font-medium">{String(hour).padStart(2, "0")}h</div>
-                <div>CA {money(h.revenue, currency)}</div>
-                <div className={signedClass(h.net)}>Net {money(h.net, currency)}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="mt-1 flex justify-between text-[10px] text-muted">
-        <span>00h</span><span>06h</span><span>12h</span><span>18h</span><span>23h</span>
-      </div>
-    </Panel>
-  );
-}
-
-// --- Graphe journalier -------------------------------------------------------
-
-export function DailyChart({ daily, currency, focusDay }: { daily: PnLBucket[]; currency: string; focusDay: string }) {
-  const max = Math.max(1, ...daily.map((d) => Math.max(d.revenue, Math.abs(d.net))));
-  return (
-    <Panel title="14 derniers jours" subtitle="Clique un jour pour la vue heure par heure">
-      <div className="flex items-end gap-1 h-44">
-        {daily.map((d) => {
+    <Panel title="14 derniers jours" subtitle="Barre = chiffre d'affaires · chiffre = marge nette du jour">
+      <div className="flex items-end gap-1.5 h-64">
+        {days.map((d) => {
           const revH = (d.revenue / max) * 100;
-          const netH = (d.net / max) * 100;
-          const active = d.key === focusDay;
           return (
-            <Link
-              key={d.key}
-              href={`/?focusDay=${d.key}`}
-              className="group relative flex-1 flex flex-col justify-end items-center h-full"
-            >
-              <div className={`w-full rounded-t ${active ? "bg-accent/70" : "bg-accent/25"} group-hover:bg-accent/50`} style={{ height: `${revH}%` }} />
+            <div key={d.key} className="group relative flex-1 flex flex-col justify-end items-center h-full">
+              {/* net en petit au-dessus de la barre */}
+              <div className={`mb-1 text-[10px] font-semibold leading-none ${signedClass(d.net)}`}>
+                {d.net >= 0 ? "+" : ""}{compact(d.net, currency)}
+              </div>
               <div
-                className={`absolute left-1/2 -translate-x-1/2 h-1.5 w-1.5 rounded-full ${d.net >= 0 ? "bg-pos" : "bg-neg"}`}
-                style={{ bottom: `${Math.max(0, netH)}%` }}
+                className={`w-full rounded-t ${d.net >= 0 ? "bg-accent/50" : "bg-neg/50"} group-hover:opacity-80`}
+                style={{ height: `${Math.max(revH, 1)}%` }}
               />
+              <div className="mt-1 text-[9px] text-muted whitespace-nowrap">{dayLabel(d.key).replace(".", "")}</div>
               <div className="pointer-events-none absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap rounded bg-panel-2 border border-line px-2 py-1 text-[11px] z-10">
                 <div className="font-medium">{dayLabel(d.key)}</div>
                 <div>CA {money(d.revenue, currency)}</div>
                 <div className={signedClass(d.net)}>Net {money(d.net, currency)}</div>
                 <div className="text-muted">{d.orders} cmd</div>
               </div>
-            </Link>
+            </div>
           );
         })}
       </div>
@@ -112,104 +110,104 @@ export function DailyChart({ daily, currency, focusDay }: { daily: PnLBucket[]; 
   );
 }
 
-// --- Répartition par source --------------------------------------------------
+// --- Répartition par source (sur la période choisie) -------------------------
 
-export function SourceBreakdown({ report }: { report: PnLReport }) {
-  const rows = report.sources.map((s) => ({ ...s, agg: report.bySource[s.id] }));
+export function SourceBreakdown({
+  bySource,
+  sources,
+  currency,
+  periodLabel,
+}: {
+  bySource: BySource;
+  sources: SourceStatus[];
+  currency: string;
+  periodLabel: string;
+}) {
+  const rows = sources
+    .map((s) => ({ id: s.id, label: SOURCE_LABELS[s.id] || s.label, state: s.state, agg: bySource[s.id] }))
+    .filter((r) => r.agg && (r.agg.revenue > 0 || r.agg.cost > 0));
   return (
-    <Panel title="Par source" subtitle="Contribution de chaque outil à la marge">
-      <div className="space-y-2">
-        {rows.map((r) => (
-          <div key={r.id} className="flex items-center justify-between rounded-lg bg-panel-2 px-3 py-2 text-sm">
-            <div className="flex items-center gap-2">
-              <StateDot state={r.state} />
-              <span className="font-medium">{r.label}</span>
+    <Panel title="Par source" subtitle={`Contribution de chaque outil · ${periodLabel.toLowerCase()}`}>
+      {rows.length === 0 ? (
+        <p className="text-sm text-muted">Aucun mouvement sur cette période.</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r) => (
+            <div key={r.id} className="flex items-center justify-between rounded-lg bg-panel-2 px-3 py-2 text-sm">
+              <div className="flex items-center gap-2">
+                <StateDot state={r.state} />
+                <span className="font-medium">{r.label}</span>
+              </div>
+              <div className="flex items-center gap-4 text-right">
+                {r.agg.revenue > 0 && <span className="text-muted">CA {money(r.agg.revenue, currency)}</span>}
+                {r.agg.cost > 0 && <span className="text-neg">−{money(r.agg.cost, currency)}</span>}
+              </div>
             </div>
-            <div className="flex items-center gap-4 text-right">
-              {r.agg.revenue > 0 && <span className="text-muted">CA {money(r.agg.revenue, report.currency)}</span>}
-              {r.agg.cost > 0 && <span className="text-neg">−{money(r.agg.cost, report.currency)}</span>}
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </Panel>
   );
 }
 
 // --- Projection fiscale ------------------------------------------------------
 
-export function TaxPanel({ report }: { report: PnLReport }) {
-  const { tax } = report;
+export function TaxPanel({ tax, currency, periodLabel }: { tax: TaxProjection; currency: string; periodLabel: string }) {
   return (
-    <Panel title="TVA & impôts (projection période)" subtitle="Indicatif — à valider avec la compta">
+    <Panel title="TVA & impôts" subtitle={`Projection ${periodLabel.toLowerCase()} — indicatif, à valider avec la compta`}>
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-lg bg-panel-2 p-3">
           <div className="text-xs text-muted">TVA collectée à reverser</div>
-          <div className="mt-1 text-xl font-semibold text-warn">{money(tax.vatTotal, report.currency)}</div>
+          <div className="mt-1 text-xl font-semibold text-warn">{money(tax.vatTotal, currency)}</div>
         </div>
         <div className="rounded-lg bg-panel-2 p-3">
           <div className="text-xs text-muted">IS estimé ({pct(tax.corporateTaxRate)})</div>
-          <div className="mt-1 text-xl font-semibold text-warn">{money(tax.corporateTaxEstimate, report.currency)}</div>
+          <div className="mt-1 text-xl font-semibold text-warn">{money(tax.corporateTaxEstimate, currency)}</div>
         </div>
       </div>
       {tax.vatByCountry.length > 0 && (
         <div className="mt-3">
           <div className="mb-1 text-xs uppercase tracking-wide text-muted">TVA par pays</div>
           <div className="space-y-1">
-            {tax.vatByCountry.map((v) => (
+            {tax.vatByCountry.slice(0, 8).map((v) => (
               <div key={v.country} className="flex justify-between text-sm">
                 <span>{COUNTRY_NAMES[v.country] ?? v.country}</span>
-                <span className="text-muted">{money(v.collected, report.currency)}</span>
+                <span className="text-muted">{money(v.collected, currency)}</span>
               </div>
             ))}
           </div>
         </div>
       )}
-      <ul className="mt-3 space-y-1 text-[11px] text-muted list-disc pl-4">
-        {tax.notes.map((n, i) => (
-          <li key={i}>{n}</li>
-        ))}
-      </ul>
     </Panel>
   );
 }
 
 // --- Rapprochement (Pennylane / Qonto) ---------------------------------------
 
-export function ReconciliationPanel({ report }: { report: PnLReport }) {
-  const r = report.reconciliation;
-  const hasData = r.accountingExpenses > 0 || r.bankOutflows > 0;
+export function ReconciliationPanel({ r, currency }: { r: Reconciliation; currency: string }) {
   const coherent = Math.abs(r.gap) <= Math.max(50, r.operationalCosts * 0.1);
   return (
-    <Panel title="Rapprochement" subtitle="Recoupe la marge opérationnelle avec la compta et la banque">
+    <Panel title="Rapprochement (30 jours)" subtitle="Recoupe la marge opérationnelle avec la compta et la banque">
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-lg bg-panel-2 p-3">
           <div className="text-xs text-muted">Coûts opérationnels</div>
-          <div className="mt-1 text-lg font-semibold">{money(r.operationalCosts, report.currency)}</div>
-          <div className="text-[10px] text-muted">comptés dans la marge</div>
+          <div className="mt-1 text-lg font-semibold">{money(r.operationalCosts, currency)}</div>
         </div>
         <div className="rounded-lg bg-panel-2 p-3">
           <div className="text-xs text-muted">Charges Pennylane</div>
-          <div className="mt-1 text-lg font-semibold">{hasData && r.accountingExpenses > 0 ? money(r.accountingExpenses, report.currency) : "—"}</div>
-          <div className="text-[10px] text-muted">compta (rapprochement)</div>
+          <div className="mt-1 text-lg font-semibold">{r.accountingExpenses > 0 ? money(r.accountingExpenses, currency) : "—"}</div>
         </div>
         <div className="rounded-lg bg-panel-2 p-3">
           <div className="text-xs text-muted">Sorties Qonto</div>
-          <div className="mt-1 text-lg font-semibold">{hasData && r.bankOutflows > 0 ? money(r.bankOutflows, report.currency) : "—"}</div>
-          <div className="text-[10px] text-muted">banque (rapprochement)</div>
+          <div className="mt-1 text-lg font-semibold">{r.bankOutflows > 0 ? money(r.bankOutflows, currency) : "—"}</div>
         </div>
       </div>
       {r.accountingExpenses > 0 && (
         <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${coherent ? "bg-pos/10 text-pos" : "bg-warn/10 text-warn"}`}>
-          Écart marge ↔ compta : <strong>{money(r.gap, report.currency)}</strong>{" "}
-          {coherent ? "· cohérent ✅" : "· à investiguer (coût manquant ou double compte)"}
+          Écart marge ↔ compta : <strong>{money(r.gap, currency)}</strong>{" "}
+          {coherent ? "· cohérent ✅" : "· à investiguer"}
         </div>
       )}
-      <ul className="mt-3 space-y-1 text-[11px] text-muted list-disc pl-4">
-        {r.notes.map((n, i) => (
-          <li key={i}>{n}</li>
-        ))}
-      </ul>
     </Panel>
   );
 }
@@ -224,9 +222,9 @@ export function SourceStatusPanel({ sources }: { sources: SourceStatus[] }) {
           <div key={s.id} className="flex items-center justify-between text-sm">
             <div className="flex items-center gap-2">
               <StateDot state={s.state} />
-              <span className="font-medium">{s.label}</span>
+              <span className="font-medium">{SOURCE_LABELS[s.id] || s.label}</span>
             </div>
-            <span className="text-xs text-muted text-right max-w-[60%]">{s.detail}</span>
+            <span className="text-xs text-muted text-right max-w-[60%] truncate">{s.detail}</span>
           </div>
         ))}
       </div>

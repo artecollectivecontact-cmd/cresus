@@ -1,6 +1,9 @@
 import type {
+  BySource,
   LedgerEntry,
   NormalizedEntry,
+  PeriodKey,
+  PeriodSlice,
   PnLBucket,
   PnLReport,
   Reconciliation,
@@ -246,26 +249,29 @@ function round2(n: number): number {
 
 // --- Point d'entrée principal ------------------------------------------------
 
-export interface BuildOptions {
-  /** Nombre de jours d'historique (par défaut 14). */
-  days?: number;
-  /** Jour ciblé pour la vue horaire (YYYY-MM-DD). Défaut : aujourd'hui. */
-  focusDay?: string;
-}
+// --- Cache des données (partie lourde : appels API) --------------------------
 
-export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
-  const days = opts.days ?? 14;
+const DATA_TTL_MS = Number(process.env.DATA_TTL_MS ?? 180_000); // 3 min
+let dataCache: {
+  at: number;
+  normalized: NormalizedEntry[];
+  statuses: SourceStatus[];
+  demo: boolean;
+} | null = null;
+
+/** Récupère + normalise 30 jours d'écritures (avec cache mémoire). */
+async function getData(): Promise<NonNullable<typeof dataCache>> {
+  if (dataCache && Date.now() - dataCache.at < DATA_TTL_MS) return dataCache;
+
   const now = new Date();
-  const to = new Date(now.getTime() + 60_000); // marge pour inclure l'instant présent
-  const from = new Date(now.getTime() - days * 86_400_000);
+  const to = new Date(now.getTime() + 60_000);
+  const from = new Date(now.getTime() - 30 * 86_400_000);
   const range: DateRange = { from: from.toISOString(), to: to.toISOString() };
 
-  // 1) Récupération de toutes les sources — EN PARALLÈLE et avec un TIMEOUT par
-  //    connecteur, pour qu'une seule API lente ne bloque jamais toute la page.
+  // 1) Toutes les sources en parallèle, avec timeout par connecteur.
   const raw: LedgerEntry[] = [];
   const statuses: SourceStatus[] = [];
   let anyLive = false;
-
   const results = await Promise.all(
     connectors.map(async (c) => {
       const meta = SOURCES.find((s) => s.id === c.id)!;
@@ -277,20 +283,13 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
       return { meta, res };
     })
   );
-
   for (const { meta, res } of results) {
     if (res.state === "live") anyLive = true;
     raw.push(...res.entries);
-    statuses.push({
-      id: meta.id,
-      label: meta.label,
-      state: res.state,
-      detail: res.detail,
-      entryCount: res.entries.length,
-    });
+    statuses.push({ id: meta.id, label: meta.label, state: res.state, detail: res.detail, entryCount: res.entries.length });
   }
 
-  // 2) Fallback démo si rien n'est branché en direct.
+  // 2) Fallback démo si rien n'est branché.
   let demo = false;
   if (!anyLive) {
     demo = true;
@@ -301,9 +300,7 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
     patchStatus(statuses, "meta", "demo", `démo — ${meta.length} jours de dépense`);
   }
 
-  // 3) Coûts estimés (POD non branchés) + frais de paiement.
-  //    Uniquement en base "connectors" : en base "pennylane", c'est la compta
-  //    qui fournit les charges réelles, on n'estime rien pour ne pas doubler.
+  // 3) Coûts estimés (POD non branchés) + frais de paiement (base "connectors").
   if (COST_BASIS === "connectors") {
     const hasRealCogs = raw.some((e) => e.kind === "cogs" && !e.meta?.estimated);
     const estimated = estimateCosts(raw, hasRealCogs);
@@ -313,8 +310,7 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
     }
   }
 
-  // 3bis) Politique de coût : marque en rapprochement ce qui ne doit pas être
-  //       re-sommé dans la marge (évite le double comptage).
+  // 3bis) Politique de coût (anti double comptage).
   applyCostBasis(raw);
 
   // 4) Conversion en devise de reporting.
@@ -324,94 +320,102 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
     return { ...e, amountBase: e.amount * rate, baseCurrency: BASE_CURRENCY, fxRate: rate };
   });
 
-  // 5) Agrégation par jour et par heure.
-  const focusDay = opts.focusDay || todayLocal();
-  const dailyMap = new Map<string, { b: PnLBucket; refs: Set<string> }>();
-  const hourlyMap = new Map<number, { b: PnLBucket; refs: Set<string> }>();
-  const total = emptyBucket("total", from.toISOString());
-  const totalRefs = new Set<string>();
+  dataCache = { at: Date.now(), normalized, statuses, demo };
+  return dataCache;
+}
+
+// --- Helpers d'agrégation par période ---------------------------------------
+
+/** Décale une clé de jour "YYYY-MM-DD" de `delta` jours. */
+function shiftDay(day: string, delta: number): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+}
+
+interface Dated {
+  e: NormalizedEntry;
+  day: string;
+}
+
+function aggregatePeriod(dated: Dated[], key: PeriodKey, label: string, pred: (d: string) => boolean): PeriodSlice {
+  const bucket = emptyBucket(key, new Date().toISOString());
+  const refs = new Set<string>();
   const bySource = initBySource();
-  // Cumuls de rapprochement (écritures reconcileOnly, hors marge).
-  let accountingExpenses = 0;
-  let bankOutflows = 0;
-
-  for (const e of normalized) {
-    // Écritures de rapprochement : recoupées à part, jamais dans la marge.
-    if (e.reconcileOnly) {
-      if (e.amountBase < 0) {
-        if (e.source === "pennylane") accountingExpenses += -e.amountBase;
-        if (e.source === "qonto") bankOutflows += -e.amountBase;
-      }
-      continue;
-    }
-
-    const { day, hour } = localParts(e.occurredAt);
-
-    // total
-    addToBucket(total, e, totalRefs);
-
-    // daily
-    let dd = dailyMap.get(day);
-    if (!dd) {
-      dd = { b: emptyBucket(day, `${day}T00:00:00`), refs: new Set() };
-      dailyMap.set(day, dd);
-    }
-    addToBucket(dd.b, e, dd.refs);
-
-    // hourly (jour ciblé uniquement)
-    if (day === focusDay) {
-      let hh = hourlyMap.get(hour);
-      if (!hh) {
-        hh = { b: emptyBucket(`${focusDay}T${String(hour).padStart(2, "0")}`, `${focusDay}T${String(hour).padStart(2, "0")}:00:00`), refs: new Set() };
-        hourlyMap.set(hour, hh);
-      }
-      addToBucket(hh.b, e, hh.refs);
-    }
-
-    // par source
+  const inWindow: NormalizedEntry[] = [];
+  for (const { e, day } of dated) {
+    if (!pred(day)) continue;
+    inWindow.push(e);
+    if (e.reconcileOnly) continue; // hors marge
+    addToBucket(bucket, e, refs);
     accBySource(bySource, e);
   }
+  finalizeBucket(bucket, refs.size);
+  const tax = projectTax(inWindow, bucket.net);
+  return { key, label, bucket, bySource, tax };
+}
 
-  finalizeBucket(total, totalRefs.size);
+function reconcileSums(dated: Dated[], pred: (d: string) => boolean): { accounting: number; bank: number } {
+  let accounting = 0;
+  let bank = 0;
+  for (const { e, day } of dated) {
+    if (!pred(day) || !e.reconcileOnly || e.amountBase >= 0) continue;
+    if (e.source === "pennylane") accounting += -e.amountBase;
+    if (e.source === "qonto") bank += -e.amountBase;
+  }
+  return { accounting: round2(accounting), bank: round2(bank) };
+}
 
-  const daily = [...dailyMap.values()]
+function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[] {
+  const map = new Map<string, { b: PnLBucket; refs: Set<string> }>();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = shiftDay(today, -i);
+    map.set(d, { b: emptyBucket(d, `${d}T00:00:00`), refs: new Set() });
+  }
+  for (const { e, day } of dated) {
+    if (e.reconcileOnly) continue;
+    const slot = map.get(day);
+    if (!slot) continue;
+    addToBucket(slot.b, e, slot.refs);
+  }
+  return [...map.values()]
     .map(({ b, refs }) => {
       finalizeBucket(b, refs.size);
       return b;
     })
     .sort((a, b) => a.key.localeCompare(b.key));
+}
 
-  // 24 heures pleines pour le jour ciblé (les heures vides restent à zéro).
-  const hourly: PnLBucket[] = [];
-  for (let h = 0; h < 24; h++) {
-    const hh = hourlyMap.get(h);
-    const key = `${focusDay}T${String(h).padStart(2, "0")}`;
-    if (hh) {
-      finalizeBucket(hh.b, hh.refs.size);
-      hourly.push(hh.b);
-    } else {
-      hourly.push(emptyBucket(key, `${key}:00:00`));
-    }
-  }
+// --- Point d'entrée ----------------------------------------------------------
 
-  const tax = projectTax(normalized, total.net);
+export async function buildReport(): Promise<PnLReport> {
+  const { normalized, statuses, demo } = await getData();
+  const dated: Dated[] = normalized.map((e) => ({ e, day: localParts(e.occurredAt).day }));
 
-  const operationalCosts = round2(
-    total.cogs + total.fulfillment + total.shipping + total.ads + total.fees + total.expenses + total.refunds
-  );
-  accountingExpenses = round2(accountingExpenses);
-  bankOutflows = round2(bankOutflows);
-  const reconciliation = buildReconciliation(operationalCosts, accountingExpenses, bankOutflows, statuses);
+  const today = todayLocal();
+  const from = (n: number) => shiftDay(today, -(n - 1)); // fenêtre de n jours incluant aujourd'hui
+
+  const daily = buildDailyBuckets(dated, 30, today);
+
+  const periods: Record<PeriodKey, PeriodSlice> = {
+    day: aggregatePeriod(dated, "day", "Aujourd'hui", (d) => d === today),
+    week: aggregatePeriod(dated, "week", "7 jours", (d) => d >= from(7)),
+    d14: aggregatePeriod(dated, "d14", "14 jours", (d) => d >= from(14)),
+    d30: aggregatePeriod(dated, "d30", "30 jours", (d) => d >= from(30)),
+  };
+
+  // Rapprochement sur 30 jours.
+  const b30 = periods.d30.bucket;
+  const opCosts = round2(b30.cogs + b30.fulfillment + b30.shipping + b30.ads + b30.fees + b30.expenses + b30.refunds);
+  const rec = reconcileSums(dated, (d) => d >= from(30));
+  const reconciliation = buildReconciliation(opCosts, rec.accounting, rec.bank, statuses);
 
   return {
     currency: BASE_CURRENCY,
-    total,
     daily,
-    hourly,
-    focusDay,
-    bySource,
+    periods,
     sources: statuses,
-    tax,
     reconciliation,
     demo,
     generatedAt: new Date().toISOString(),
@@ -452,13 +456,13 @@ function buildReconciliation(
 
 // --- Helpers -----------------------------------------------------------------
 
-function initBySource(): PnLReport["bySource"] {
-  const obj = {} as PnLReport["bySource"];
+function initBySource(): BySource {
+  const obj = {} as BySource;
   for (const s of SOURCES) obj[s.id] = { net: 0, revenue: 0, cost: 0 };
   return obj;
 }
 
-function accBySource(acc: PnLReport["bySource"], e: NormalizedEntry): void {
+function accBySource(acc: BySource, e: NormalizedEntry): void {
   const s = acc[e.source];
   if (!s) return;
   if (e.kind === "tax_collected") return; // dette, hors marge
