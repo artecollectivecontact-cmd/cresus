@@ -174,6 +174,46 @@ export function TaxPanel({ report }: { report: PnLReport }) {
   );
 }
 
+// --- Rapprochement (Pennylane / Qonto) ---------------------------------------
+
+export function ReconciliationPanel({ report }: { report: PnLReport }) {
+  const r = report.reconciliation;
+  const hasData = r.accountingExpenses > 0 || r.bankOutflows > 0;
+  const coherent = Math.abs(r.gap) <= Math.max(50, r.operationalCosts * 0.1);
+  return (
+    <Panel title="Rapprochement" subtitle="Recoupe la marge opérationnelle avec la compta et la banque">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-lg bg-panel-2 p-3">
+          <div className="text-xs text-muted">Coûts opérationnels</div>
+          <div className="mt-1 text-lg font-semibold">{money(r.operationalCosts, report.currency)}</div>
+          <div className="text-[10px] text-muted">comptés dans la marge</div>
+        </div>
+        <div className="rounded-lg bg-panel-2 p-3">
+          <div className="text-xs text-muted">Charges Pennylane</div>
+          <div className="mt-1 text-lg font-semibold">{hasData && r.accountingExpenses > 0 ? money(r.accountingExpenses, report.currency) : "—"}</div>
+          <div className="text-[10px] text-muted">compta (rapprochement)</div>
+        </div>
+        <div className="rounded-lg bg-panel-2 p-3">
+          <div className="text-xs text-muted">Sorties Qonto</div>
+          <div className="mt-1 text-lg font-semibold">{hasData && r.bankOutflows > 0 ? money(r.bankOutflows, report.currency) : "—"}</div>
+          <div className="text-[10px] text-muted">banque (rapprochement)</div>
+        </div>
+      </div>
+      {r.accountingExpenses > 0 && (
+        <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${coherent ? "bg-pos/10 text-pos" : "bg-warn/10 text-warn"}`}>
+          Écart marge ↔ compta : <strong>{money(r.gap, report.currency)}</strong>{" "}
+          {coherent ? "· cohérent ✅" : "· à investiguer (coût manquant ou double compte)"}
+        </div>
+      )}
+      <ul className="mt-3 space-y-1 text-[11px] text-muted list-disc pl-4">
+        {r.notes.map((n, i) => (
+          <li key={i}>{n}</li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
 // --- État des connecteurs ----------------------------------------------------
 
 export function SourceStatusPanel({ sources }: { sources: SourceStatus[] }) {

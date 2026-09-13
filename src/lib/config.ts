@@ -33,6 +33,16 @@ export const VAT_RATES: Record<string, number> = {
 export const CORPORATE_TAX_RATE = Number(process.env.CORPORATE_TAX_RATE ?? 0.25);
 
 /**
+ * Source des COÛTS pour la marge nette, afin d'éviter le double comptage.
+ * - "connectors" (défaut) : la marge jour/heure s'appuie sur les coûts
+ *   granulaires (POD par commande + Meta). Pennylane (compta) et Qonto (banque)
+ *   servent de RAPPROCHEMENT : ils recoupent le total, sans être re-sommés.
+ * - "pennylane" : Pennylane (charges comptabilisées) pilote les coûts ; les
+ *   connecteurs POD/Meta/Qonto deviennent de simples repères de rapprochement.
+ */
+export const COST_BASIS = (process.env.COST_BASIS as "connectors" | "pennylane") || "connectors";
+
+/**
  * Coût de production estimé (POD) tant que Printify/Prodigi/Artelo ne sont pas
  * branchés. Ratio appliqué au CA HT. À remplacer par les coûts réels par
  * commande dès que les connecteurs fournisseurs renvoient des données live.

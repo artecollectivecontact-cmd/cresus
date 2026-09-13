@@ -1,29 +1,122 @@
 import type { Connector, DateRange, FetchResult } from "./types";
+import type { LedgerEntry } from "../types";
 import { hasEnv } from "../config";
 
 // ---------------------------------------------------------------------------
-// Connecteur Artelo — fournisseur POD (impression) => source de COÛT.
+// Connecteur Artelo — fournisseur POD (impression) => coût de prod + expédition.
+// Doc : https://www.artelo.io/artelo-api (token généré depuis Integrations).
 //
-// STUB : pas d'API publique clairement identifiée à ce stade. Deux options une
-// fois confirmé avec l'équipe :
-//   1) API REST Artelo (si elle existe) -> même schéma que Printify/Prodigi
-//      (récupérer le coût de prod + expédition par commande, montant NÉGATIF,
-//       kind "cogs"/"fulfillment", rattaché au n° de commande Shopify via `ref`).
-//   2) Sinon, import CSV/Sheet des coûts fournisseur -> à brancher ici.
+// ⚠️ La doc Artelo est inaccessible depuis l'environnement de build (bloquée par
+// la politique réseau). Cette implémentation suit le pattern POD standard
+// (Bearer token, liste d'orders paginée, coût par commande) avec un mapping de
+// champs DÉFENSIF. Deux choses à confirmer avec la vraie doc/clé :
+//   1) ARTELO_BASE (URL de base de l'API) et le path exact des commandes ;
+//   2) les noms de champs du coût de prod, de l'expédition, de la devise et de
+//      la référence marchand (voir COST_KEYS / SHIP_KEYS ci-dessous).
 // Le reste de l'app est déjà prêt à consommer ces écritures normalisées.
 // ---------------------------------------------------------------------------
 
 const ENV = ["ARTELO_API_KEY"];
+const BASE = process.env.ARTELO_BASE || "https://api.artelo.io/v1";
+
+type Json = Record<string, unknown>;
+
+const DATE_KEYS = ["created_at", "createdAt", "created", "date", "placed_at"];
+const COST_KEYS = ["production_cost", "product_cost", "items_cost", "cost", "total_cost", "subtotal"];
+const SHIP_KEYS = ["shipping_cost", "shipping", "shipping_price", "delivery_cost"];
+const REF_KEYS = ["merchant_reference", "external_id", "order_reference", "reference", "shop_order_id"];
+const CCY_KEYS = ["currency", "currency_code"];
+
+function num(o: Json, keys: string[]): number {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "number") return v;
+    if (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v))) return Number(v);
+    if (v && typeof v === "object") {
+      const inner = (v as Json).amount ?? (v as Json).value;
+      if (typeof inner === "number") return inner;
+      if (typeof inner === "string" && !isNaN(Number(inner))) return Number(inner);
+    }
+  }
+  return 0;
+}
+function str(o: Json, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim() !== "") return v;
+  }
+  return undefined;
+}
 
 export const arteloConnector: Connector = {
   id: "artelo",
   label: "Artelo",
   isConfigured: () => hasEnv(ENV),
 
-  async fetch(_range: DateRange): Promise<FetchResult> {
+  async fetch(range: DateRange): Promise<FetchResult> {
     if (!hasEnv(ENV)) {
-      return { entries: [], state: "stub", detail: "API/coûts Artelo à brancher (POD)" };
+      return { entries: [], state: "stub", detail: "clé absente (ARTELO_API_KEY)" };
     }
-    return { entries: [], state: "stub", detail: "clé présente — endpoint Artelo à implémenter" };
+    const key = process.env.ARTELO_API_KEY!;
+    const fromMs = new Date(range.from).getTime();
+    const toMs = new Date(range.to).getTime();
+    try {
+      const entries: LedgerEntry[] = [];
+      let page = 1;
+      let guard = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (guard++ < 200) {
+        const res = await fetch(`${BASE}/orders?page=${page}&limit=100`, {
+          headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`Artelo HTTP ${res.status}`);
+        const data = (await res.json()) as Json;
+        const list: Json[] =
+          (data.orders as Json[]) || (data.data as Json[]) || (data.results as Json[]) || [];
+        if (list.length === 0) break;
+
+        for (const o of list) {
+          const dateStr = str(o, DATE_KEYS);
+          if (!dateStr) continue;
+          const ts = new Date(dateStr.replace(" ", "T")).getTime();
+          if (isNaN(ts) || ts < fromMs || ts >= toMs) continue;
+          const iso = new Date(ts).toISOString();
+          const currency = str(o, CCY_KEYS) || "EUR";
+          const ref = str(o, REF_KEYS);
+          const cost = num(o, COST_KEYS);
+          const ship = num(o, SHIP_KEYS);
+          if (cost > 0) {
+            entries.push({
+              id: `artelo:order:${str(o, ["id"]) || iso}:cogs`,
+              source: "artelo",
+              kind: "cogs",
+              occurredAt: iso,
+              amount: -cost,
+              currency,
+              label: `Prod. Artelo${ref ? ` (${ref})` : ""}`,
+              ref,
+            });
+          }
+          if (ship > 0) {
+            entries.push({
+              id: `artelo:order:${str(o, ["id"]) || iso}:ship`,
+              source: "artelo",
+              kind: "fulfillment",
+              occurredAt: iso,
+              amount: -ship,
+              currency,
+              label: `Expédition Artelo${ref ? ` (${ref})` : ""}`,
+              ref,
+            });
+          }
+        }
+        if (list.length < 100) break;
+        page++;
+      }
+      return { entries, state: "live", detail: `${entries.length} écritures` };
+    } catch (e) {
+      return { entries: [], state: "error", detail: (e as Error).message };
+    }
   },
 };

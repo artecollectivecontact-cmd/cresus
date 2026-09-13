@@ -41,8 +41,8 @@ src/
       prodigi.ts        → ✅ implémenté (REST)
       qonto.ts          → ✅ implémenté (REST)
       meta.ts           → ✅ implémenté (Graph Insights)
-      pennylane.ts      → 🚧 stub (endpoint à confirmer)
-      artelo.ts         → 🚧 stub (API/coûts à brancher)
+      pennylane.ts      → ✅ implémenté (API v2, parsing défensif à revérifier)
+      artelo.ts         → ✅ implémenté (best-effort, base + champs à confirmer)
   components/dashboard.tsx → UI (KPI, graphes, panneaux)
 ```
 
@@ -72,11 +72,31 @@ npm run dev                  # http://localhost:3000
 | Prodigi | ✅ live-ready | `PRODIGI_API_KEY` |
 | Qonto | ✅ live-ready | `QONTO_LOGIN` + `QONTO_SECRET_KEY` |
 | Meta Ads | ✅ live-ready | `META_ACCESS_TOKEN` + `META_AD_ACCOUNT_ID` |
-| Pennylane | 🚧 stub | confirmer l'endpoint (charges vs factures) pour éviter le double comptage avec Qonto |
-| Artelo | 🚧 stub | identifier l'API / la source des coûts (POD) |
+| Pennylane | ✅ implémenté | `PENNYLANE_API_TOKEN` — parsing des champs à revérifier avec une vraie clé (doc inaccessible au build) |
+| Artelo | ✅ implémenté | `ARTELO_API_KEY` (+ `ARTELO_BASE`) — URL de base et noms de champs coût à confirmer |
+
+## Anti double-comptage & rapprochement (`COST_BASIS`)
+
+Le même euro dépensé peut apparaître dans plusieurs sources (une pub Meta est
+dans Meta Ads **et** dans Pennylane **et** dans Qonto). Pour ne jamais le compter
+deux fois dans la marge :
+
+- **`COST_BASIS=connectors`** (défaut) : la marge jour/heure s'appuie sur les
+  coûts **granulaires** (POD par commande + Meta). Pennylane (compta) et Qonto
+  (banque) deviennent un **rapprochement** — affichés à part, jamais re-sommés.
+  Un écart marge ↔ compta est signalé pour repérer un coût manquant.
+- **`COST_BASIS=pennylane`** : les **charges comptabilisées** dans Pennylane
+  pilotent la marge (rapprochement de tout), et les connecteurs POD/Meta
+  redeviennent un simple repère détaillé.
+
+C'est piloté par le flag `reconcileOnly` posé dans `pnl.ts` : les connecteurs ne
+connaissent pas la politique, ils remontent juste leurs écritures.
 
 ## Notes importantes
 
-- **COGS estimé** : tant que Printify/Prodigi/Artelo ne renvoient pas de coûts réels, le coût de production est estimé (`ESTIMATED_COGS_RATE`) et **clairement marqué comme estimation** dans l'UI. Dès qu'un connecteur POD est en direct, les vrais coûts prennent le relais.
-- **Éviter le double comptage** : Qonto encaisse le CA Shopify — on ignore ces crédits (`QONTO_IGNORE_LABELS`) pour ne pas compter le revenu deux fois. Même logique à prévoir entre Qonto et Pennylane.
-- **Fiscalité indicative** : les projections TVA/IS sont des ordres de grandeur, pas la liasse comptable.
+- **COGS estimé** : en base `connectors`, tant que Printify/Prodigi/Artelo ne
+  renvoient pas de coûts réels, le coût de production est estimé
+  (`ESTIMATED_COGS_RATE`) et **clairement marqué « est. »** dans l'UI. Dès qu'un
+  connecteur POD est en direct, les vrais coûts prennent le relais.
+- **Fiscalité indicative** : les projections TVA/IS sont des ordres de grandeur,
+  pas la liasse comptable.

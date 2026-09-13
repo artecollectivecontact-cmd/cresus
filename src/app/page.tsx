@@ -6,6 +6,7 @@ import {
   DailyChart,
   SourceBreakdown,
   TaxPanel,
+  ReconciliationPanel,
   SourceStatusPanel,
 } from "@/components/dashboard";
 
@@ -68,6 +69,10 @@ export default async function Home({
       <div className="grid gap-4 lg:grid-cols-2">
         <SourceBreakdown report={report} />
         <TaxPanel report={report} />
+      </div>
+
+      <div className="mt-4">
+        <ReconciliationPanel report={report} />
       </div>
 
       <div className="mt-4">

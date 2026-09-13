@@ -47,6 +47,13 @@ export interface LedgerEntry {
   country?: string;
   /** Référence croisée (ex: n° de commande Shopify pour matcher un coût POD). */
   ref?: string;
+  /**
+   * true => écriture de RAPPROCHEMENT uniquement : elle sert à recouper les
+   * chiffres (Pennylane = compta, Qonto = banque) mais n'est PAS sommée dans la
+   * marge nette pour éviter le double comptage avec les connecteurs granulaires.
+   * Positionné par la politique de coût dans pnl.ts, pas par les connecteurs.
+   */
+  reconcileOnly?: boolean;
   /** Données brutes utiles au debug / à l'audit, non utilisées par le moteur. */
   meta?: Record<string, unknown>;
 }
@@ -99,9 +106,32 @@ export interface PnLReport {
   sources: SourceStatus[];
   /** Projection fiscale sur la période. */
   tax: TaxProjection;
+  /** Rapprochement comptable/bancaire (recoupe la marge opérationnelle). */
+  reconciliation: Reconciliation;
   /** true si le rapport utilise des données de démonstration (pas de clés API). */
   demo: boolean;
   generatedAt: string;
+}
+
+/**
+ * Vue de rapprochement : compare les coûts comptés dans la marge opérationnelle
+ * (connecteurs granulaires) avec la vérité comptable (Pennylane) et bancaire
+ * (Qonto) sur la même période. Un écart important signale un coût manquant ou
+ * une catégorisation à revoir.
+ */
+export interface Reconciliation {
+  /** Source qui pilote la marge nette : "connectors" ou "pennylane". */
+  costBasis: "connectors" | "pennylane";
+  /** Total des coûts sommés dans la marge nette sur la période. */
+  operationalCosts: number;
+  /** Charges comptabilisées dans Pennylane sur la période (rapprochement). */
+  accountingExpenses: number;
+  /** Sorties bancaires Qonto sur la période (rapprochement). */
+  bankOutflows: number;
+  /** Écart = operationalCosts - accountingExpenses (proche de 0 = cohérent). */
+  gap: number;
+  currency: Currency;
+  notes: string[];
 }
 
 export interface SourceStatus {

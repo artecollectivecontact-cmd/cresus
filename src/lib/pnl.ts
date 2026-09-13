@@ -3,6 +3,7 @@ import type {
   NormalizedEntry,
   PnLBucket,
   PnLReport,
+  Reconciliation,
   SourceId,
   SourceStatus,
 } from "./types";
@@ -12,6 +13,7 @@ import { getConverter } from "./fx";
 import { projectTax } from "./tax";
 import {
   BASE_CURRENCY,
+  COST_BASIS,
   ESTIMATED_COGS_RATE,
   ESTIMATED_FULFILLMENT_RATE,
   PAYMENT_FEE_RATE,
@@ -106,6 +108,31 @@ function estimateCosts(entries: LedgerEntry[], hasRealCogs: boolean): LedgerEntr
     }
   }
   return out;
+}
+
+// --- Politique de coût : évite le double comptage entre les sources ----------
+
+/**
+ * Marque `reconcileOnly` sur les écritures qui NE doivent PAS entrer dans la
+ * marge nette, selon COST_BASIS, pour ne pas compter deux fois la même dépense.
+ * - "connectors" : Pennylane (compta) + Qonto (banque) = rapprochement.
+ * - "pennylane"  : POD granulaire + Meta + Qonto = rapprochement ; Pennylane
+ *   pilote les charges (les revenus Shopify restent comptés normalement).
+ */
+function applyCostBasis(entries: LedgerEntry[]): void {
+  for (const e of entries) {
+    if (COST_BASIS === "connectors") {
+      if (e.source === "pennylane" || e.source === "qonto") e.reconcileOnly = true;
+    } else {
+      const granularCost =
+        e.source === "printify" ||
+        e.source === "prodigi" ||
+        e.source === "artelo" ||
+        e.source === "meta" ||
+        e.source === "qonto";
+      if (granularCost && e.kind !== "revenue") e.reconcileOnly = true;
+    }
+  }
 }
 
 // --- Agrégation --------------------------------------------------------------
@@ -232,15 +259,20 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
   }
 
   // 3) Coûts estimés (POD non branchés) + frais de paiement.
-  const hasRealCogs = raw.some((e) => e.kind === "cogs" && !(e.meta?.estimated));
-  const estimated = estimateCosts(raw, hasRealCogs);
-  raw.push(...estimated);
-  if (estimated.length > 0) {
-    const anyEstCogs = estimated.some((e) => e.kind === "cogs");
-    if (anyEstCogs) {
+  //    Uniquement en base "connectors" : en base "pennylane", c'est la compta
+  //    qui fournit les charges réelles, on n'estime rien pour ne pas doubler.
+  if (COST_BASIS === "connectors") {
+    const hasRealCogs = raw.some((e) => e.kind === "cogs" && !e.meta?.estimated);
+    const estimated = estimateCosts(raw, hasRealCogs);
+    raw.push(...estimated);
+    if (estimated.some((e) => e.kind === "cogs")) {
       patchStatus(statuses, "printify", undefined, "coûts POD estimés (branche Printify/Prodigi/Artelo pour le réel)", true);
     }
   }
+
+  // 3bis) Politique de coût : marque en rapprochement ce qui ne doit pas être
+  //       re-sommé dans la marge (évite le double comptage).
+  applyCostBasis(raw);
 
   // 4) Conversion en devise de reporting.
   const fx = await getConverter();
@@ -256,8 +288,20 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
   const total = emptyBucket("total", from.toISOString());
   const totalRefs = new Set<string>();
   const bySource = initBySource();
+  // Cumuls de rapprochement (écritures reconcileOnly, hors marge).
+  let accountingExpenses = 0;
+  let bankOutflows = 0;
 
   for (const e of normalized) {
+    // Écritures de rapprochement : recoupées à part, jamais dans la marge.
+    if (e.reconcileOnly) {
+      if (e.amountBase < 0) {
+        if (e.source === "pennylane") accountingExpenses += -e.amountBase;
+        if (e.source === "qonto") bankOutflows += -e.amountBase;
+      }
+      continue;
+    }
+
     const { day, hour } = localParts(e.occurredAt);
 
     // total
@@ -309,6 +353,13 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
 
   const tax = projectTax(normalized, total.net);
 
+  const operationalCosts = round2(
+    total.cogs + total.fulfillment + total.shipping + total.ads + total.fees + total.expenses + total.refunds
+  );
+  accountingExpenses = round2(accountingExpenses);
+  bankOutflows = round2(bankOutflows);
+  const reconciliation = buildReconciliation(operationalCosts, accountingExpenses, bankOutflows, statuses);
+
   return {
     currency: BASE_CURRENCY,
     total,
@@ -318,8 +369,41 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
     bySource,
     sources: statuses,
     tax,
+    reconciliation,
     demo,
     generatedAt: new Date().toISOString(),
+  };
+}
+
+function buildReconciliation(
+  operationalCosts: number,
+  accountingExpenses: number,
+  bankOutflows: number,
+  statuses: SourceStatus[]
+): Reconciliation {
+  const pennylaneLive = statuses.find((s) => s.id === "pennylane")?.state === "live";
+  const qontoLive = statuses.find((s) => s.id === "qonto")?.state === "live";
+  const notes: string[] = [];
+  if (COST_BASIS === "connectors") {
+    notes.push("Marge pilotée par les coûts granulaires (POD par commande + Meta).");
+    notes.push(
+      pennylaneLive
+        ? "Pennylane recoupe les charges comptabilisées — un écart signale un coût manquant côté connecteurs."
+        : "Branche Pennylane pour recouper automatiquement avec la compta."
+    );
+  } else {
+    notes.push("Marge pilotée par les charges comptabilisées dans Pennylane.");
+    notes.push("Les connecteurs POD/Meta servent ici de repère détaillé.");
+  }
+  if (qontoLive) notes.push("Qonto donne les sorties bancaires réelles de la période.");
+  return {
+    costBasis: COST_BASIS,
+    operationalCosts,
+    accountingExpenses,
+    bankOutflows,
+    gap: round2(operationalCosts - accountingExpenses),
+    currency: BASE_CURRENCY,
+    notes,
   };
 }
 
