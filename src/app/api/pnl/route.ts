@@ -3,6 +3,7 @@ import { buildReport } from "@/lib/pnl";
 
 // Rapport P&L en JSON. Ex: /api/pnl?days=14&focusDay=2026-09-13
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);

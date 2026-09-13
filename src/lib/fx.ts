@@ -23,9 +23,13 @@ const TTL_MS = 1000 * 60 * 60 * 6; // 6 h
 async function fetchEcbRates(): Promise<Record<string, number> | null> {
   try {
     // frankfurter renvoie des taux base=EUR : 1 EUR = rates[XXX].
+    // Timeout : si l'API ne répond pas vite, on retombe sur les taux figés.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
     const res = await fetch("https://api.frankfurter.app/latest?from=EUR", {
       next: { revalidate: 21600 },
-    });
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(timer));
     if (!res.ok) return null;
     const data = (await res.json()) as { rates: Record<string, number> };
     // On veut l'inverse : 1 XXX = (1 / rates[XXX]) EUR.

@@ -24,6 +24,38 @@ import { sampleShopifyEntries, sampleMetaEntries } from "./sample-data";
 
 const REPORT_TZ = process.env.REPORT_TZ || "Europe/Paris";
 
+// Délai max accordé à chaque connecteur (garde la page sous le timeout Vercel).
+const CONNECTOR_TIMEOUT_MS = Number(process.env.CONNECTOR_TIMEOUT_MS ?? 8000);
+
+/** Renvoie `fallback` si la promesse n'a pas résolu avant `ms` millisecondes. */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (!done) {
+        done = true;
+        resolve(fallback);
+      }
+    }, ms);
+    promise.then(
+      (v) => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          resolve(v);
+        }
+      },
+      () => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          resolve(fallback);
+        }
+      }
+    );
+  });
+}
+
 // --- Découpage temporel dans le fuseau de reporting (Europe/Paris) -----------
 
 function localParts(iso: string): { day: string; hour: number } {
@@ -228,18 +260,29 @@ export async function buildReport(opts: BuildOptions = {}): Promise<PnLReport> {
   const from = new Date(now.getTime() - days * 86_400_000);
   const range: DateRange = { from: from.toISOString(), to: to.toISOString() };
 
-  // 1) Récupération de toutes les sources.
+  // 1) Récupération de toutes les sources — EN PARALLÈLE et avec un TIMEOUT par
+  //    connecteur, pour qu'une seule API lente ne bloque jamais toute la page.
   const raw: LedgerEntry[] = [];
   const statuses: SourceStatus[] = [];
   let anyLive = false;
 
-  for (const c of connectors) {
-    const meta = SOURCES.find((s) => s.id === c.id)!;
-    const res = await c.fetch(range);
+  const results = await Promise.all(
+    connectors.map(async (c) => {
+      const meta = SOURCES.find((s) => s.id === c.id)!;
+      const res = await withTimeout(c.fetch(range), CONNECTOR_TIMEOUT_MS, {
+        entries: [],
+        state: "error" as const,
+        detail: `délai dépassé (>${Math.round(CONNECTOR_TIMEOUT_MS / 1000)}s)`,
+      });
+      return { meta, res };
+    })
+  );
+
+  for (const { meta, res } of results) {
     if (res.state === "live") anyLive = true;
     raw.push(...res.entries);
     statuses.push({
-      id: c.id,
+      id: meta.id,
       label: meta.label,
       state: res.state,
       detail: res.detail,
