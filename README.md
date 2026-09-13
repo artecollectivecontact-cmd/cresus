@@ -58,10 +58,20 @@ npm run dev                  # http://localhost:3000
 
 ## Déploiement Vercel
 
-1. Pousser ce repo sur GitHub.
-2. Sur Vercel : *New Project* → importer le repo (framework détecté : Next.js).
-3. Onglet **Settings → Environment Variables** : coller les clés de `.env.example`.
-4. Deploy. Chaque source passe automatiquement de **démo** à **direct** dès que ses clés sont présentes.
+Le repo est prêt (branche `main`). Étapes :
+
+1. [vercel.com/new](https://vercel.com/new) → **Import Git Repository** → choisir
+   `artecollectivecontact-cmd/cresus`. Framework auto-détecté : **Next.js**
+   (build `next build`, aucune config à changer).
+2. **Production Branch** : mettre `main` (Settings → Git, si ce n'est pas déjà le cas).
+3. **Environment Variables** : ajouter les clés (voir `.env.example` pour la liste
+   complète). Minimum pour du réel : `SHOPIFY_SHOP` + `SHOPIFY_ADMIN_TOKEN`.
+   Ajouter ensuite `PRINTIFY_API_TOKEN`, `PRODIGI_API_KEY`, etc.
+4. **Deploy**. Chaque source passe de **démo** à **direct** automatiquement dès
+   que ses clés sont présentes — pas besoin de toucher au code.
+
+> Sans aucune clé, le site se déploie quand même et tourne en **mode démo**.
+> Ajouter les clés après coup ne demande qu'un *Redeploy*.
 
 ## Où en est chaque connecteur
 
