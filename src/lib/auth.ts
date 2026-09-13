@@ -22,6 +22,27 @@ export function authEnabled(): boolean {
   return authPassword().length > 0;
 }
 
+/** IP de confiance (env ALLOWED_IPS, séparées par des virgules). */
+export function allowedIps(): string[] {
+  return (process.env.ALLOWED_IPS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Extrait l'IP client (Vercel : req.ip prioritaire, sinon x-forwarded-for). */
+export function clientIp(directIp: string | undefined, xForwardedFor: string | null): string {
+  if (directIp) return directIp;
+  const xff = xForwardedFor || "";
+  return xff.split(",")[0].trim();
+}
+
+/** true si l'IP est dans la liste de confiance (match exact ou préfixe "1.2.3."). */
+export function isAllowedIp(ip: string): boolean {
+  if (!ip) return false;
+  return allowedIps().some((entry) => entry === ip || (entry.endsWith(".") && ip.startsWith(entry)));
+}
+
 function b64url(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   let s = "";

@@ -1,11 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [ip, setIp] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/ip")
+      .then((r) => r.json())
+      .then((d) => setIp(d.ip || null))
+      .catch(() => {});
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -65,6 +73,13 @@ export default function LoginPage() {
         >
           {loading ? "Connexion…" : "Entrer"}
         </button>
+
+        {ip && (
+          <p className="mt-4 border-t border-line pt-3 text-[11px] leading-relaxed text-muted">
+            Astuce : pour ne plus taper le mot de passe depuis ce réseau, ajoute ton IP{" "}
+            <code className="text-accent">{ip}</code> à la variable <code>ALLOWED_IPS</code> sur Vercel.
+          </p>
+        )}
       </form>
     </main>
   );

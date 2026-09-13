@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AUTH_COOKIE, authEnabled, verifyToken } from "@/lib/auth";
+import { AUTH_COOKIE, authEnabled, clientIp, isAllowedIp, verifyToken } from "@/lib/auth";
 
 // Protège toutes les routes (pages + API) quand APP_PASSWORD est défini.
-// Laisse passer la page de login, l'API de login et les assets statiques.
+// Laisse passer la page de login, l'API de login, l'API d'IP et les assets.
 
-const PUBLIC_PATHS = ["/login", "/api/login"];
+const PUBLIC_PATHS = ["/login", "/api/login", "/api/ip"];
 
 export async function middleware(req: NextRequest) {
   if (!authEnabled()) return NextResponse.next();
@@ -13,6 +13,10 @@ export async function middleware(req: NextRequest) {
   if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
     return NextResponse.next();
   }
+
+  // IP de confiance : accès direct sans mot de passe.
+  const ip = clientIp(req.ip, req.headers.get("x-forwarded-for"));
+  if (isAllowedIp(ip)) return NextResponse.next();
 
   const token = req.cookies.get(AUTH_COOKIE)?.value;
   if (await verifyToken(token)) return NextResponse.next();
