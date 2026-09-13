@@ -18,6 +18,17 @@ interface ProdigiOrder {
   charges?: { totalCost?: { amount: string; currency: string } }[];
 }
 
+function sumCharges(o: ProdigiOrder): { cost: number; currency: string } {
+  let cost = 0;
+  let currency = "GBP";
+  for (const c of o.charges ?? []) {
+    const amt = c.totalCost?.amount;
+    if (amt != null && !isNaN(Number(amt))) cost += Number(amt);
+    if (c.totalCost?.currency) currency = c.totalCost.currency;
+  }
+  return { cost, currency };
+}
+
 export const prodigiConnector: Connector = {
   id: "prodigi",
   label: "Prodigi",
@@ -28,57 +39,46 @@ export const prodigiConnector: Connector = {
       return { entries: [], state: "stub", detail: "clé absente (PRODIGI_API_KEY)" };
     }
     const key = process.env.PRODIGI_API_KEY!;
-    const from = new Date(range.from).getTime();
-    const to = new Date(range.to).getTime();
     const TOP = 100;
-    const BATCHES = 8; // 8 lots de 100 = 800 commandes récentes couvertes
-
-    // Un lot Prodigi, avec timeout individuel pour ne jamais bloquer.
-    const fetchBatch = async (skip: number): Promise<ProdigiOrder[]> => {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      try {
-        const res = await fetch(`${BASE}/orders?top=${TOP}&skip=${skip}`, {
+    try {
+      // Filtrage par date CÔTÉ SERVEUR (createdFrom/createdTo) : l'ordre de tri
+      // n'a plus d'importance et le jeu est petit. On pagine avec top/skip.
+      const entries: LedgerEntry[] = [];
+      let skip = 0;
+      let guard = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (guard++ < 15) {
+        const params = new URLSearchParams({
+          top: String(TOP),
+          skip: String(skip),
+          createdFrom: range.from,
+          createdTo: range.to,
+        });
+        const res = await fetch(`${BASE}/orders?${params.toString()}`, {
           headers: { "X-API-Key": key },
           cache: "no-store",
-          signal: ctrl.signal,
         });
-        if (!res.ok) return [];
-        const data = (await res.json()) as { orders: ProdigiOrder[] };
-        return data.orders ?? [];
-      } catch {
-        return [];
-      } finally {
-        clearTimeout(timer);
-      }
-    };
-
-    try {
-      // Commandes triées de la plus récente à la plus ancienne : on récupère les
-      // BATCHES premiers lots EN PARALLÈLE (au lieu d'une boucle en série qui
-      // dépassait le délai), puis on filtre par date.
-      const skips = Array.from({ length: BATCHES }, (_, i) => i * TOP);
-      const batches = await Promise.all(skips.map(fetchBatch));
-      const entries: LedgerEntry[] = [];
-      for (const batch of batches) {
+        if (!res.ok) throw new Error(`Prodigi HTTP ${res.status}`);
+        const data = (await res.json()) as { orders?: ProdigiOrder[] };
+        const batch = data.orders ?? [];
         for (const o of batch) {
           const ts = new Date(o.created).getTime();
-          if (isNaN(ts) || ts < from || ts >= to) continue;
-          const charge = o.charges?.[0]?.totalCost;
-          const cost = charge ? Number(charge.amount) : 0;
+          const { cost, currency } = sumCharges(o);
           if (cost > 0) {
             entries.push({
               id: `prodigi:order:${o.id}:cogs`,
               source: "prodigi",
               kind: "cogs",
-              occurredAt: new Date(ts).toISOString(),
+              occurredAt: isNaN(ts) ? new Date().toISOString() : new Date(ts).toISOString(),
               amount: -cost,
-              currency: charge!.currency || "GBP",
+              currency,
               label: `Prod. Prodigi${o.merchantReference ? ` (${o.merchantReference})` : ""}`,
               ref: o.merchantReference,
             });
           }
         }
+        if (batch.length < TOP) break;
+        skip += TOP;
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
     } catch (e) {
