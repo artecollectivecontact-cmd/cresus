@@ -18,6 +18,10 @@ interface ProdigiOrder {
   charges?: { totalCost?: { amount: string; currency: string } }[];
 }
 
+// Somme de toutes les charges Prodigi (Item + Shipping + éventuels crédits).
+// `amount` : positif = débit (coût), négatif = crédit (remboursement).
+// NB : `charges` reste vide tant que Prodigi n'a pas facturé la commande, donc
+// une commande toute récente peut renvoyer un coût de 0 (normal).
 function sumCharges(o: ProdigiOrder): { cost: number; currency: string } {
   let cost = 0;
   let currency = "GBP";
@@ -59,7 +63,7 @@ export const prodigiConnector: Connector = {
           cache: "no-store",
         });
         if (!res.ok) throw new Error(`Prodigi HTTP ${res.status}`);
-        const data = (await res.json()) as { orders?: ProdigiOrder[] };
+        const data = (await res.json()) as { orders?: ProdigiOrder[]; hasMore?: boolean };
         const batch = data.orders ?? [];
         for (const o of batch) {
           const ts = new Date(o.created).getTime();
@@ -77,7 +81,7 @@ export const prodigiConnector: Connector = {
             });
           }
         }
-        if (batch.length < TOP) break;
+        if (!data.hasMore || batch.length === 0) break;
         skip += TOP;
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
