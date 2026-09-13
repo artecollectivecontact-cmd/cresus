@@ -1,5 +1,6 @@
 import { buildReport } from "@/lib/pnl";
 import { dayLabel } from "@/lib/format";
+import { authEnabled } from "@/lib/auth";
 import {
   KpiRow,
   HourlyChart,
@@ -40,6 +41,11 @@ export default async function Home({
         <div className="text-right text-xs text-muted">
           <div>Devise : {report.currency}</div>
           <div>MàJ {new Date(report.generatedAt).toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}</div>
+          {authEnabled() && (
+            <a href="/api/login" className="mt-1 inline-block text-accent hover:underline">
+              Déconnexion
+            </a>
+          )}
         </div>
       </header>
 
