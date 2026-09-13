@@ -33,12 +33,14 @@ export const prodigiConnector: Connector = {
       const to = new Date(range.to).getTime();
       const entries: LedgerEntry[] = [];
       let skip = 0;
+      let guard = 0;
+      const TOP = 100;
       // Commandes renvoyées de la plus récente à la plus ancienne : on s'arrête
       // dès qu'un lot ne contient plus rien dans la période (évite de scanner
-      // tout l'historique et de dépasser le délai).
+      // tout l'historique et de dépasser le délai). Plafond de sécurité: 15 lots.
       let reachedOlder = false;
-      while (!reachedOlder) {
-        const res = await fetch(`${BASE}/orders?top=50&skip=${skip}`, {
+      while (!reachedOlder && guard++ < 15) {
+        const res = await fetch(`${BASE}/orders?top=${TOP}&skip=${skip}`, {
           headers: { "X-API-Key": key },
           cache: "no-store",
         });
@@ -65,9 +67,9 @@ export const prodigiConnector: Connector = {
             });
           }
         }
-        if (batch.length < 50) break;
+        if (batch.length < TOP) break;
         if (!anyInRangeOrNewer) reachedOlder = true;
-        skip += 50;
+        skip += TOP;
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
     } catch (e) {

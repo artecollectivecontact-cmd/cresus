@@ -50,58 +50,62 @@ export const printifyConnector: Connector = {
       const from = new Date(range.from).getTime();
       const to = new Date(range.to).getTime();
       const entries: LedgerEntry[] = [];
+      // Limite Printify pour les orders : 10 par page (au-delà => HTTP 400).
+      // Commandes triées de la plus récente à la plus ancienne. Pour éviter les
+      // dizaines de pages en série (=> timeout), on récupère la page 1 puis
+      // TOUTES les autres pages EN PARALLÈLE, plafonnées à MAX_PAGES récentes.
+      const MAX_PAGES = 40;
+
+      const pushOrder = (o: PrintifyOrder) => {
+        const ts = new Date(o.created_at.replace(" ", "T")).getTime();
+        if (isNaN(ts) || ts < from || ts >= to) return;
+        const ref = o.metadata?.shop_order_label;
+        const iso = new Date(ts).toISOString();
+        const cogs = (o.total_price ?? 0) / 100;
+        const ship = (o.total_shipping ?? 0) / 100;
+        if (cogs > 0) {
+          entries.push({
+            id: `printify:order:${o.id}:cogs`,
+            source: "printify",
+            kind: "cogs",
+            occurredAt: iso,
+            amount: -cogs,
+            currency: "USD",
+            label: `Prod. Printify${ref ? ` (${ref})` : ""}`,
+            ref,
+          });
+        }
+        if (ship > 0) {
+          entries.push({
+            id: `printify:order:${o.id}:ship`,
+            source: "printify",
+            kind: "fulfillment",
+            occurredAt: iso,
+            amount: -ship,
+            currency: "USD",
+            label: `Expédition Printify${ref ? ` (${ref})` : ""}`,
+            ref,
+          });
+        }
+      };
 
       for (const shop of shops) {
-        let page = 1;
-        // Les commandes sont renvoyées de la plus récente à la plus ancienne :
-        // dès qu'une page ne contient que des commandes plus vieilles que la
-        // période, on s'arrête (évite de scanner tout l'historique).
-        // Limite Printify pour les orders : 10 par page (au-delà => HTTP 400).
-        let reachedOlder = false;
-        // eslint-disable-next-line no-constant-condition
-        while (!reachedOlder) {
-          const res = await api<{ data: PrintifyOrder[]; last_page: number }>(
-            token,
-            `/shops/${shop.id}/orders.json?page=${page}&limit=10`
+        const first = await api<{ data: PrintifyOrder[]; last_page: number }>(
+          token,
+          `/shops/${shop.id}/orders.json?page=1&limit=10`
+        );
+        first.data.forEach(pushOrder);
+        const lastPage = Math.min(first.last_page || 1, MAX_PAGES);
+        if (lastPage > 1) {
+          const pages = Array.from({ length: lastPage - 1 }, (_, i) => i + 2);
+          const results = await Promise.all(
+            pages.map((p) =>
+              api<{ data: PrintifyOrder[] }>(token, `/shops/${shop.id}/orders.json?page=${p}&limit=10`).catch(
+                () => ({ data: [] as PrintifyOrder[] })
+              )
+            )
           );
-          let anyInRangeOrNewer = false;
-          for (const o of res.data) {
-            const ts = new Date(o.created_at.replace(" ", "T")).getTime();
-            if (!isNaN(ts) && ts >= from) anyInRangeOrNewer = true;
-            if (isNaN(ts) || ts < from || ts >= to) continue;
-            const ref = o.metadata?.shop_order_label;
-            const iso = new Date(ts).toISOString();
-            const cogs = (o.total_price ?? 0) / 100;
-            const ship = (o.total_shipping ?? 0) / 100;
-            if (cogs > 0) {
-              entries.push({
-                id: `printify:order:${o.id}:cogs`,
-                source: "printify",
-                kind: "cogs",
-                occurredAt: iso,
-                amount: -cogs,
-                currency: "USD",
-                label: `Prod. Printify${ref ? ` (${ref})` : ""}`,
-                ref,
-              });
-            }
-            if (ship > 0) {
-              entries.push({
-                id: `printify:order:${o.id}:ship`,
-                source: "printify",
-                kind: "fulfillment",
-                occurredAt: iso,
-                amount: -ship,
-                currency: "USD",
-                label: `Expédition Printify${ref ? ` (${ref})` : ""}`,
-                ref,
-              });
-            }
-          }
-          // Fin si dernière page, page vide, ou plus aucune commande récente.
-          if (page >= res.last_page || res.data.length === 0) break;
-          if (!anyInRangeOrNewer) reachedOlder = true;
-          page++;
+          for (const r of results) r.data.forEach(pushOrder);
         }
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
