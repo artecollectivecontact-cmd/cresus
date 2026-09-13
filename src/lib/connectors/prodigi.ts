@@ -44,14 +44,13 @@ export const prodigiConnector: Connector = {
     }
     const key = process.env.PRODIGI_API_KEY!;
     const TOP = 100;
-    try {
-      // Filtrage par date CÔTÉ SERVEUR (createdFrom/createdTo) : l'ordre de tri
-      // n'a plus d'importance et le jeu est petit. On pagine avec top/skip.
-      const entries: LedgerEntry[] = [];
-      let skip = 0;
-      let guard = 0;
-      // eslint-disable-next-line no-constant-condition
-      while (guard++ < 15) {
+    const BATCHES = 12; // 12 x 100 = 1200 commandes de la fenêtre couvertes
+
+    // Un lot filtré par date (createdFrom/createdTo), avec timeout individuel.
+    const fetchBatch = async (skip: number): Promise<ProdigiOrder[]> => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 9000);
+      try {
         const params = new URLSearchParams({
           top: String(TOP),
           skip: String(skip),
@@ -61,10 +60,25 @@ export const prodigiConnector: Connector = {
         const res = await fetch(`${BASE}/orders?${params.toString()}`, {
           headers: { "X-API-Key": key },
           cache: "no-store",
+          signal: ctrl.signal,
         });
-        if (!res.ok) throw new Error(`Prodigi HTTP ${res.status}`);
-        const data = (await res.json()) as { orders?: ProdigiOrder[]; hasMore?: boolean };
-        const batch = data.orders ?? [];
+        if (!res.ok) return [];
+        const data = (await res.json()) as { orders?: ProdigiOrder[] };
+        return data.orders ?? [];
+      } catch {
+        return [];
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    try {
+      // Filtrage par date côté serveur + lots EN PARALLÈLE (au lieu d'une boucle
+      // en série qui dépassait le délai sur 30 jours de commandes).
+      const skips = Array.from({ length: BATCHES }, (_, i) => i * TOP);
+      const batches = await Promise.all(skips.map(fetchBatch));
+      const entries: LedgerEntry[] = [];
+      for (const batch of batches) {
         for (const o of batch) {
           const ts = new Date(o.created).getTime();
           const { cost, currency } = sumCharges(o);
@@ -81,8 +95,6 @@ export const prodigiConnector: Connector = {
             });
           }
         }
-        if (!data.hasMore || batch.length === 0) break;
-        skip += TOP;
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
     } catch (e) {

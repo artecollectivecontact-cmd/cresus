@@ -61,48 +61,72 @@ export const qontoConnector: Connector = {
         return { entries: [], state: "live", detail: "aucun compte bancaire" };
       }
 
-      // 2) Transactions par compte (bank_account_id), paginées.
+      // 2) Transactions par compte : on lit la page 1 (qui donne total_pages),
+      //    puis on récupère les pages restantes EN PARALLÈLE (évite le timeout
+      //    sur 30 jours de transactions).
       const entries: LedgerEntry[] = [];
-      for (const acct of accounts) {
+      const MAX_PAGES = 30;
+
+      const pageParams = (acct: BankAccount, page: number) => {
+        const p = new URLSearchParams({
+          current_page: String(page),
+          per_page: "100",
+          emitted_at_from: range.from,
+          emitted_at_to: range.to,
+        });
         const acctId = acct.bank_account_id || acct.id;
-        let page = 1;
-        let guard = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (guard++ < 50) {
-          const params = new URLSearchParams({
-            current_page: String(page),
-            per_page: "100",
-            emitted_at_from: range.from,
-            emitted_at_to: range.to,
-          });
-          if (acctId) params.set("bank_account_id", acctId);
-          else if (acct.iban) params.set("iban", acct.iban);
-          const res = await fetch(`${BASE}/transactions?${params.toString()}`, {
+        if (acctId) p.set("bank_account_id", acctId);
+        else if (acct.iban) p.set("iban", acct.iban);
+        return p;
+      };
+
+      const fetchTx = async (acct: BankAccount, page: number): Promise<Transaction[]> => {
+        try {
+          const res = await fetch(`${BASE}/transactions?${pageParams(acct, page).toString()}`, {
             headers,
             cache: "no-store",
           });
-          if (!res.ok) throw new Error(`Qonto HTTP ${res.status} (transactions)`);
-          const data = (await res.json()) as {
-            transactions?: Transaction[];
-            meta?: { next_page: number | null };
-          };
-          for (const t of data.transactions ?? []) {
-            const name = (t.clean_counterparty_name || t.label || "").toLowerCase();
-            if (ignore.some((k) => name.includes(k))) continue; // évite le double comptage du CA
-            if (t.side !== "debit") continue; // on ne garde que les sorties comme charges
-            entries.push({
-              id: `qonto:tx:${t.transaction_id}`,
-              source: "qonto",
-              kind: "expense",
-              occurredAt: t.emitted_at,
-              amount: -Math.abs(t.amount),
-              currency: t.currency,
-              label: t.clean_counterparty_name || t.label || "Dépense Qonto",
-            });
-          }
-          const nextPage = data.meta?.next_page ?? null;
-          if (!nextPage) break;
-          page = nextPage;
+          if (!res.ok) return [];
+          const data = (await res.json()) as { transactions?: Transaction[] };
+          return data.transactions ?? [];
+        } catch {
+          return [];
+        }
+      };
+
+      const collect = (txs: Transaction[]) => {
+        for (const t of txs) {
+          const name = (t.clean_counterparty_name || t.label || "").toLowerCase();
+          if (ignore.some((k) => name.includes(k))) continue; // évite le double comptage du CA
+          if (t.side !== "debit") continue; // on ne garde que les sorties comme charges
+          entries.push({
+            id: `qonto:tx:${t.transaction_id}`,
+            source: "qonto",
+            kind: "expense",
+            occurredAt: t.emitted_at,
+            amount: -Math.abs(t.amount),
+            currency: t.currency,
+            label: t.clean_counterparty_name || t.label || "Dépense Qonto",
+          });
+        }
+      };
+
+      for (const acct of accounts) {
+        const res = await fetch(`${BASE}/transactions?${pageParams(acct, 1).toString()}`, {
+          headers,
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`Qonto HTTP ${res.status} (transactions)`);
+        const data = (await res.json()) as {
+          transactions?: Transaction[];
+          meta?: { total_pages?: number; next_page?: number | null };
+        };
+        collect(data.transactions ?? []);
+        const totalPages = Math.min(data.meta?.total_pages ?? 1, MAX_PAGES);
+        if (totalPages > 1) {
+          const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+          const rest = await Promise.all(pages.map((p) => fetchTx(acct, p)));
+          rest.forEach(collect);
         }
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
