@@ -17,7 +17,8 @@ import { hasEnv } from "../config";
 // ---------------------------------------------------------------------------
 
 const ENV = ["ARTELO_API_KEY"];
-const BASE = process.env.ARTELO_BASE || "https://api.artelo.io/v1";
+// Base et endpoint confirmés par la doc Artelo. Auth : Authorization: Bearer.
+const BASE = process.env.ARTELO_BASE || "https://www.artelo.com/api/open";
 
 type Json = Record<string, unknown>;
 
@@ -57,67 +58,58 @@ export const arteloConnector: Connector = {
     if (!hasEnv(ENV)) {
       return { entries: [], state: "stub", detail: "clé absente (ARTELO_API_KEY)" };
     }
-    // Tant que l'URL de base réelle n'est pas confirmée, on n'appelle pas une
-    // URL devinée (sinon "fetch failed"). Définir ARTELO_BASE pour activer.
-    if (!process.env.ARTELO_BASE) {
-      return { entries: [], state: "stub", detail: "définir ARTELO_BASE (URL API Artelo à confirmer)" };
-    }
     const key = process.env.ARTELO_API_KEY!;
     const fromMs = new Date(range.from).getTime();
     const toMs = new Date(range.to).getTime();
     try {
-      const entries: LedgerEntry[] = [];
-      let page = 1;
-      let guard = 0;
-      // eslint-disable-next-line no-constant-condition
-      while (guard++ < 200) {
-        const res = await fetch(`${BASE}/orders?page=${page}&limit=100`, {
-          headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
-          cache: "no-store",
-        });
-        if (!res.ok) throw new Error(`Artelo HTTP ${res.status}`);
-        const data = (await res.json()) as Json;
-        const list: Json[] =
-          (data.orders as Json[]) || (data.data as Json[]) || (data.results as Json[]) || [];
-        if (list.length === 0) break;
+      // Un seul appel à /orders/get (rate limit 50/10s, pagination non encore
+      // spécifiée). Parsing défensif : la liste peut être un tableau nu ou sous
+      // orders/data/results, et les noms de champs coût/date sont tolérants.
+      const res = await fetch(`${BASE}/orders/get`, {
+        headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`Artelo HTTP ${res.status}`);
+      const data = (await res.json()) as Json | Json[];
+      const list: Json[] = Array.isArray(data)
+        ? data
+        : ((data.orders as Json[]) || (data.data as Json[]) || (data.results as Json[]) || []);
 
-        for (const o of list) {
-          const dateStr = str(o, DATE_KEYS);
-          if (!dateStr) continue;
-          const ts = new Date(dateStr.replace(" ", "T")).getTime();
-          if (isNaN(ts) || ts < fromMs || ts >= toMs) continue;
-          const iso = new Date(ts).toISOString();
-          const currency = str(o, CCY_KEYS) || "EUR";
-          const ref = str(o, REF_KEYS);
-          const cost = num(o, COST_KEYS);
-          const ship = num(o, SHIP_KEYS);
-          if (cost > 0) {
-            entries.push({
-              id: `artelo:order:${str(o, ["id"]) || iso}:cogs`,
-              source: "artelo",
-              kind: "cogs",
-              occurredAt: iso,
-              amount: -cost,
-              currency,
-              label: `Prod. Artelo${ref ? ` (${ref})` : ""}`,
-              ref,
-            });
-          }
-          if (ship > 0) {
-            entries.push({
-              id: `artelo:order:${str(o, ["id"]) || iso}:ship`,
-              source: "artelo",
-              kind: "fulfillment",
-              occurredAt: iso,
-              amount: -ship,
-              currency,
-              label: `Expédition Artelo${ref ? ` (${ref})` : ""}`,
-              ref,
-            });
-          }
+      const entries: LedgerEntry[] = [];
+      for (const o of list) {
+        const dateStr = str(o, DATE_KEYS);
+        if (!dateStr) continue;
+        const ts = new Date(dateStr.replace(" ", "T")).getTime();
+        if (isNaN(ts) || ts < fromMs || ts >= toMs) continue;
+        const iso = new Date(ts).toISOString();
+        const currency = str(o, CCY_KEYS) || "EUR";
+        const ref = str(o, REF_KEYS);
+        const cost = num(o, COST_KEYS);
+        const ship = num(o, SHIP_KEYS);
+        if (cost > 0) {
+          entries.push({
+            id: `artelo:order:${str(o, ["id"]) || iso}:cogs`,
+            source: "artelo",
+            kind: "cogs",
+            occurredAt: iso,
+            amount: -cost,
+            currency,
+            label: `Prod. Artelo${ref ? ` (${ref})` : ""}`,
+            ref,
+          });
         }
-        if (list.length < 100) break;
-        page++;
+        if (ship > 0) {
+          entries.push({
+            id: `artelo:order:${str(o, ["id"]) || iso}:ship`,
+            source: "artelo",
+            kind: "fulfillment",
+            occurredAt: iso,
+            amount: -ship,
+            currency,
+            label: `Expédition Artelo${ref ? ` (${ref})` : ""}`,
+            ref,
+          });
+        }
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
     } catch (e) {
