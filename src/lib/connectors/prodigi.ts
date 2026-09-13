@@ -33,17 +33,22 @@ export const prodigiConnector: Connector = {
       const to = new Date(range.to).getTime();
       const entries: LedgerEntry[] = [];
       let skip = 0;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const res = await fetch(`${BASE}/orders?top=100&skip=${skip}`, {
+      // Commandes renvoyées de la plus récente à la plus ancienne : on s'arrête
+      // dès qu'un lot ne contient plus rien dans la période (évite de scanner
+      // tout l'historique et de dépasser le délai).
+      let reachedOlder = false;
+      while (!reachedOlder) {
+        const res = await fetch(`${BASE}/orders?top=50&skip=${skip}`, {
           headers: { "X-API-Key": key },
           cache: "no-store",
         });
         if (!res.ok) throw new Error(`Prodigi HTTP ${res.status}`);
         const data = (await res.json()) as { orders: ProdigiOrder[] };
         const batch = data.orders ?? [];
+        let anyInRangeOrNewer = false;
         for (const o of batch) {
           const ts = new Date(o.created).getTime();
+          if (!isNaN(ts) && ts >= from) anyInRangeOrNewer = true;
           if (isNaN(ts) || ts < from || ts >= to) continue;
           const charge = o.charges?.[0]?.totalCost;
           const cost = charge ? Number(charge.amount) : 0;
@@ -60,8 +65,9 @@ export const prodigiConnector: Connector = {
             });
           }
         }
-        if (batch.length < 100) break;
-        skip += 100;
+        if (batch.length < 50) break;
+        if (!anyInRangeOrNewer) reachedOlder = true;
+        skip += 50;
       }
       return { entries, state: "live", detail: `${entries.length} écritures` };
     } catch (e) {

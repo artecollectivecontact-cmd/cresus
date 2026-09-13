@@ -57,6 +57,11 @@ export const arteloConnector: Connector = {
     if (!hasEnv(ENV)) {
       return { entries: [], state: "stub", detail: "clé absente (ARTELO_API_KEY)" };
     }
+    // Tant que l'URL de base réelle n'est pas confirmée, on n'appelle pas une
+    // URL devinée (sinon "fetch failed"). Définir ARTELO_BASE pour activer.
+    if (!process.env.ARTELO_BASE) {
+      return { entries: [], state: "stub", detail: "définir ARTELO_BASE (URL API Artelo à confirmer)" };
+    }
     const key = process.env.ARTELO_API_KEY!;
     const fromMs = new Date(range.from).getTime();
     const toMs = new Date(range.to).getTime();

@@ -53,15 +53,21 @@ export const printifyConnector: Connector = {
 
       for (const shop of shops) {
         let page = 1;
-        // Pagination simple ; l'API renvoie {data, last_page}.
+        // Les commandes sont renvoyées de la plus récente à la plus ancienne :
+        // dès qu'une page ne contient que des commandes plus vieilles que la
+        // période, on s'arrête (évite de scanner tout l'historique).
+        // Limite Printify pour les orders : 10 par page (au-delà => HTTP 400).
+        let reachedOlder = false;
         // eslint-disable-next-line no-constant-condition
-        while (true) {
+        while (!reachedOlder) {
           const res = await api<{ data: PrintifyOrder[]; last_page: number }>(
             token,
-            `/shops/${shop.id}/orders.json?page=${page}&limit=100`
+            `/shops/${shop.id}/orders.json?page=${page}&limit=10`
           );
+          let anyInRangeOrNewer = false;
           for (const o of res.data) {
             const ts = new Date(o.created_at.replace(" ", "T")).getTime();
+            if (!isNaN(ts) && ts >= from) anyInRangeOrNewer = true;
             if (isNaN(ts) || ts < from || ts >= to) continue;
             const ref = o.metadata?.shop_order_label;
             const iso = new Date(ts).toISOString();
@@ -92,7 +98,9 @@ export const printifyConnector: Connector = {
               });
             }
           }
+          // Fin si dernière page, page vide, ou plus aucune commande récente.
           if (page >= res.last_page || res.data.length === 0) break;
+          if (!anyInRangeOrNewer) reachedOlder = true;
           page++;
         }
       }
