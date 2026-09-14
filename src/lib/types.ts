@@ -90,6 +90,8 @@ export interface PnLBucket {
   currency: Currency;
   /** Détail par région (US/UK/EU/Autres) — présent sur les buckets journaliers. */
   regions?: RegionBreak[];
+  /** Détail des frais Shopify du jour (paiement, change, TVA sur frais). */
+  feeBreakdown?: { payments: number; currency: number; vat: number; other: number };
 }
 
 /** Ventilation d'une journée par région géographique. */
@@ -148,6 +150,8 @@ export interface Reconciliation {
   accountingExpenses: number;
   /** Sorties bancaires Qonto sur la période (rapprochement). */
   bankOutflows: number;
+  /** Entrées bancaires Qonto sur la période (rapprochement). */
+  bankInflows: number;
   /** Écart = operationalCosts - accountingExpenses (proche de 0 = cohérent). */
   gap: number;
   currency: Currency;

@@ -88,9 +88,10 @@ function todayLocal(): string {
  * n'est disponible (Printify/Prodigi/Artelo non branchés). Toujours marquées
  * `meta.estimated = true` pour être distinguées dans l'UI.
  */
-function estimateCosts(entries: LedgerEntry[], hasRealCogs: boolean): LedgerEntry[] {
+function estimateCosts(entries: LedgerEntry[], hasRealCogs: boolean, hasRealFees: boolean): LedgerEntry[] {
   const out: LedgerEntry[] = [];
-  // Frais de paiement (Shopify/passerelle) : toujours estimés à partir du CA.
+  // Frais de paiement : estimés depuis le CA UNIQUEMENT si Shopify ne fournit
+  // pas les frais réels (transactions.fees).
   const revByOrder = new Map<string, { net: number; ttc: number; at: string; ccy: string }>();
   for (const e of entries) {
     if (e.source !== "shopify") continue;
@@ -106,18 +107,20 @@ function estimateCosts(entries: LedgerEntry[], hasRealCogs: boolean): LedgerEntr
   }
 
   for (const [ref, o] of revByOrder) {
-    const fee = o.ttc * PAYMENT_FEE_RATE + PAYMENT_FEE_FIXED;
-    out.push({
-      id: `est:fee:${ref}`,
-      source: "shopify",
-      kind: "fees",
-      occurredAt: o.at,
-      amount: -round2(fee),
-      currency: o.ccy,
-      label: `Frais paiement (est.) ${ref}`,
-      ref,
-      meta: { estimated: true },
-    });
+    if (!hasRealFees) {
+      const fee = o.ttc * PAYMENT_FEE_RATE + PAYMENT_FEE_FIXED;
+      out.push({
+        id: `est:fee:${ref}`,
+        source: "shopify",
+        kind: "fees",
+        occurredAt: o.at,
+        amount: -round2(fee),
+        currency: o.ccy,
+        label: `Frais paiement (est.) ${ref}`,
+        ref,
+        meta: { estimated: true, feeType: "payments" },
+      });
+    }
     if (!hasRealCogs) {
       out.push({
         id: `est:cogs:${ref}`,
@@ -157,15 +160,17 @@ function estimateCosts(entries: LedgerEntry[], hasRealCogs: boolean): LedgerEntr
  */
 function applyCostBasis(entries: LedgerEntry[]): void {
   for (const e of entries) {
+    // Qonto est TOUJOURS un miroir bancaire de rapprochement (jamais la marge),
+    // quel que soit le mode et le sens (entrée ou sortie).
+    if (e.source === "qonto") {
+      e.reconcileOnly = true;
+      continue;
+    }
     if (COST_BASIS === "connectors") {
-      if (e.source === "pennylane" || e.source === "qonto") e.reconcileOnly = true;
+      if (e.source === "pennylane") e.reconcileOnly = true;
     } else {
       const granularCost =
-        e.source === "printify" ||
-        e.source === "prodigi" ||
-        e.source === "artelo" ||
-        e.source === "meta" ||
-        e.source === "qonto";
+        e.source === "printify" || e.source === "prodigi" || e.source === "artelo" || e.source === "meta";
       if (granularCost && e.kind !== "revenue") e.reconcileOnly = true;
     }
   }
@@ -304,7 +309,8 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
   // 3) Coûts estimés (POD non branchés) + frais de paiement (base "connectors").
   if (COST_BASIS === "connectors") {
     const hasRealCogs = raw.some((e) => e.kind === "cogs" && !e.meta?.estimated);
-    const estimated = estimateCosts(raw, hasRealCogs);
+    const hasRealFees = raw.some((e) => e.kind === "fees" && !e.meta?.estimated);
+    const estimated = estimateCosts(raw, hasRealCogs, hasRealFees);
     raw.push(...estimated);
     if (estimated.some((e) => e.kind === "cogs")) {
       patchStatus(statuses, "printify", undefined, "coûts POD estimés (branche Printify/Prodigi/Artelo pour le réel)", true);
@@ -390,22 +396,39 @@ function aggregatePeriod(dated: Dated[], key: PeriodKey, label: string, pred: (d
   return { key, label, bucket, bySource, tax };
 }
 
-function reconcileSums(dated: Dated[], pred: (d: string) => boolean): { accounting: number; bank: number } {
+function reconcileSums(
+  dated: Dated[],
+  pred: (d: string) => boolean
+): { accounting: number; bankOut: number; bankIn: number } {
   let accounting = 0;
-  let bank = 0;
+  let bankOut = 0;
+  let bankIn = 0;
   for (const { e, day } of dated) {
-    if (!pred(day) || !e.reconcileOnly || e.amountBase >= 0) continue;
-    if (e.source === "pennylane") accounting += -e.amountBase;
-    if (e.source === "qonto") bank += -e.amountBase;
+    if (!pred(day) || !e.reconcileOnly) continue;
+    if (e.source === "pennylane" && e.amountBase < 0) accounting += -e.amountBase;
+    if (e.source === "qonto") {
+      if (e.amountBase < 0) bankOut += -e.amountBase;
+      else bankIn += e.amountBase;
+    }
   }
-  return { accounting: round2(accounting), bank: round2(bank) };
+  return { accounting: round2(accounting), bankOut: round2(bankOut), bankIn: round2(bankIn) };
 }
 
+type FeeAcc = { payments: number; currency: number; vat: number; other: number };
+
 function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[] {
-  const map = new Map<string, { b: PnLBucket; refs: Set<string>; reg: Map<string, RegionBreak> }>();
+  const map = new Map<
+    string,
+    { b: PnLBucket; refs: Set<string>; reg: Map<string, RegionBreak>; fees: FeeAcc }
+  >();
   for (let i = n - 1; i >= 0; i--) {
     const d = shiftDay(today, -i);
-    map.set(d, { b: emptyBucket(d, `${d}T00:00:00`), refs: new Set(), reg: new Map() });
+    map.set(d, {
+      b: emptyBucket(d, `${d}T00:00:00`),
+      refs: new Set(),
+      reg: new Map(),
+      fees: { payments: 0, currency: 0, vat: 0, other: 0 },
+    });
   }
   for (const { e, day } of dated) {
     if (e.reconcileOnly) continue;
@@ -423,10 +446,23 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
     else if (e.kind === "tax_collected") rb.taxes += v;
     else if (e.kind === "fees") rb.taxes += -v;
     slot.reg.set(r, rb);
+
+    // Détail des frais Shopify par type.
+    if (e.kind === "fees") {
+      const t = (e.meta?.feeType as keyof FeeAcc) || "other";
+      if (t in slot.fees) slot.fees[t] += -v;
+      else slot.fees.other += -v;
+    }
   }
   return [...map.values()]
-    .map(({ b, refs, reg }) => {
+    .map(({ b, refs, reg, fees }) => {
       finalizeBucket(b, refs.size);
+      b.feeBreakdown = {
+        payments: round2(fees.payments),
+        currency: round2(fees.currency),
+        vat: round2(fees.vat),
+        other: round2(fees.other),
+      };
       const order: Record<string, number> = { US: 0, UK: 1, EU: 2, Autres: 3 };
       b.regions = [...reg.values()]
         .map((r) => ({
@@ -465,7 +501,7 @@ export async function buildReport(): Promise<PnLReport> {
   const b30 = periods.d30.bucket;
   const opCosts = round2(b30.cogs + b30.fulfillment + b30.shipping + b30.ads + b30.fees + b30.expenses + b30.refunds);
   const rec = reconcileSums(dated, (d) => d >= from(30));
-  const reconciliation = buildReconciliation(opCosts, rec.accounting, rec.bank, statuses);
+  const reconciliation = buildReconciliation(opCosts, rec.accounting, rec.bankOut, rec.bankIn, statuses);
 
   // Taux EUR -> USD (fx.rate("USD") = EUR par USD).
   const fx = await getConverter();
@@ -488,6 +524,7 @@ function buildReconciliation(
   operationalCosts: number,
   accountingExpenses: number,
   bankOutflows: number,
+  bankInflows: number,
   statuses: SourceStatus[]
 ): Reconciliation {
   const pennylaneLive = statuses.find((s) => s.id === "pennylane")?.state === "live";
@@ -504,12 +541,15 @@ function buildReconciliation(
     notes.push("Marge pilotée par les charges comptabilisées dans Pennylane.");
     notes.push("Les connecteurs POD/Meta servent ici de repère détaillé.");
   }
-  if (qontoLive) notes.push("Qonto donne les sorties bancaires réelles de la période.");
+  if (qontoLive) {
+    notes.push("Qonto = tout ce qui passe réellement en banque (entrées + sorties), encaissements décalés inclus.");
+  }
   return {
     costBasis: COST_BASIS,
     operationalCosts,
     accountingExpenses,
     bankOutflows,
+    bankInflows,
     gap: round2(operationalCosts - accountingExpenses),
     currency: BASE_CURRENCY,
     notes,

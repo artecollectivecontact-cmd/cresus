@@ -69,14 +69,24 @@ async function accessToken(): Promise<string> {
   return tokenCache.token;
 }
 
+interface Money {
+  amount: string;
+  currencyCode: string;
+}
+interface TxFee {
+  amount: Money;
+  type: string;
+  taxAmount: Money | null;
+}
 interface GqlOrder {
   id: string;
   name: string;
   createdAt: string;
-  currentSubtotalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
-  currentTotalTaxSet: { shopMoney: { amount: string; currencyCode: string } };
-  totalShippingPriceSet: { shopMoney: { amount: string; currencyCode: string } };
+  currentSubtotalPriceSet: { shopMoney: Money };
+  currentTotalTaxSet: { shopMoney: Money };
+  totalShippingPriceSet: { shopMoney: Money };
   shippingAddress: { countryCodeV2: string | null } | null;
+  transactions: { fees: TxFee[] }[];
 }
 
 async function gql<T>(token: string, query: string, variables: object): Promise<T> {
@@ -107,10 +117,31 @@ const ORDERS_QUERY = `
         currentTotalTaxSet { shopMoney { amount currencyCode } }
         totalShippingPriceSet { shopMoney { amount currencyCode } }
         shippingAddress { countryCodeV2 }
+        transactions(first: 10) {
+          fees {
+            amount { amount currencyCode }
+            type
+            taxAmount { amount currencyCode }
+          }
+        }
       }
     }
   }
 `;
+
+/** Regroupe un type de frais Shopify vers nos catégories d'affichage. */
+function feeCategory(type: string): "payments" | "currency" | "other" {
+  if (type === "processing_fee") return "payments";
+  if (type === "foreign_exchange_fee") return "currency";
+  return "other";
+}
+
+const FEE_LABELS: Record<string, string> = {
+  payments: "Frais Shopify Payments",
+  currency: "Frais de change",
+  other: "Frais Shopify",
+  vat: "TVA sur frais",
+};
 
 export const shopifyConnector: Connector = {
   id: "shopify",
@@ -173,6 +204,44 @@ export const shopifyConnector: Connector = {
               country,
               ref: o.name,
             });
+          }
+
+          // Frais RÉELS (Shopify Payments + change + TVA sur frais), par type.
+          let fi = 0;
+          for (const tx of o.transactions ?? []) {
+            for (const f of tx.fees ?? []) {
+              const feeAmt = Number(f.amount.amount);
+              const cat = feeCategory(f.type);
+              if (feeAmt > 0) {
+                entries.push({
+                  id: `shopify:order:${o.id}:fee:${fi++}`,
+                  source: "shopify",
+                  kind: "fees",
+                  occurredAt: o.createdAt,
+                  amount: -feeAmt,
+                  currency: f.amount.currencyCode,
+                  label: `${FEE_LABELS[cat]} ${o.name}`,
+                  country,
+                  ref: o.name,
+                  meta: { feeType: cat },
+                });
+              }
+              const vat = f.taxAmount ? Number(f.taxAmount.amount) : 0;
+              if (vat > 0) {
+                entries.push({
+                  id: `shopify:order:${o.id}:feevat:${fi++}`,
+                  source: "shopify",
+                  kind: "fees",
+                  occurredAt: o.createdAt,
+                  amount: -vat,
+                  currency: f.taxAmount!.currencyCode,
+                  label: `${FEE_LABELS.vat} ${o.name}`,
+                  country,
+                  ref: o.name,
+                  meta: { feeType: "vat" },
+                });
+              }
+            }
           }
         }
         cursor = data.orders.pageInfo.hasNextPage ? data.orders.pageInfo.endCursor : null;

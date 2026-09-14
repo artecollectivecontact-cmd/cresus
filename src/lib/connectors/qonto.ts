@@ -43,7 +43,9 @@ export const qontoConnector: Connector = {
     const auth = `${process.env.QONTO_LOGIN}:${process.env.QONTO_SECRET_KEY}`;
     const headers = { Authorization: auth, Accept: "application/json" };
     const onlyIban = process.env.QONTO_IBAN; // optionnel : cible un compte précis
-    const ignore = (process.env.QONTO_IGNORE_LABELS || "shopify,stripe")
+    // Par défaut on capture TOUT (entrées + sorties) pour la vérification. On
+    // peut exclure des libellés via QONTO_IGNORE_LABELS si besoin.
+    const ignore = (process.env.QONTO_IGNORE_LABELS || "")
       .split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
@@ -97,16 +99,17 @@ export const qontoConnector: Connector = {
       const collect = (txs: Transaction[]) => {
         for (const t of txs) {
           const name = (t.clean_counterparty_name || t.label || "").toLowerCase();
-          if (ignore.some((k) => name.includes(k))) continue; // évite le double comptage du CA
-          if (t.side !== "debit") continue; // on ne garde que les sorties comme charges
+          if (ignore.length && ignore.some((k) => name.includes(k))) continue;
+          const debit = t.side === "debit";
+          const who = t.clean_counterparty_name || t.label || "Qonto";
           entries.push({
             id: `qonto:tx:${t.transaction_id}`,
             source: "qonto",
-            kind: "expense",
+            kind: debit ? "expense" : "revenue", // reconcileOnly => jamais dans la marge
             occurredAt: t.emitted_at,
-            amount: -Math.abs(t.amount),
+            amount: debit ? -Math.abs(t.amount) : Math.abs(t.amount),
             currency: t.currency,
-            label: t.clean_counterparty_name || t.label || "Dépense Qonto",
+            label: debit ? who : `Entrée ${who}`,
           });
         }
       };

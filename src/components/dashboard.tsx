@@ -182,6 +182,21 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
         </div>
       )}
 
+      {/* Détail des frais Shopify (paiement + change + TVA) */}
+      {bucket.feeBreakdown && (bucket.feeBreakdown.payments || bucket.feeBreakdown.currency || bucket.feeBreakdown.vat || bucket.feeBreakdown.other) ? (
+        <div className="mt-3 rounded-lg bg-panel-2 px-3 py-2 text-sm">
+          <div className="mb-1 text-xs uppercase tracking-wide text-muted">Frais Shopify du jour</div>
+          <FeeLine label="Shopify Payments" value={bucket.feeBreakdown.payments} currency={currency} />
+          <FeeLine label="Frais de change" value={bucket.feeBreakdown.currency} currency={currency} />
+          {bucket.feeBreakdown.vat > 0 && <FeeLine label="TVA sur frais" value={bucket.feeBreakdown.vat} currency={currency} />}
+          {bucket.feeBreakdown.other > 0 && <FeeLine label="Autres frais" value={bucket.feeBreakdown.other} currency={currency} />}
+          <div className="mt-1 flex justify-between border-t border-line pt-1 font-medium">
+            <span>Total frais</span>
+            <span className="text-neg">−{money(bucket.feeBreakdown.payments + bucket.feeBreakdown.currency + bucket.feeBreakdown.vat + bucket.feeBreakdown.other, currency)}</span>
+          </div>
+        </div>
+      ) : null}
+
       {/* Pub (Meta) : globale, pas de région */}
       <div className="mt-3 flex items-center justify-between rounded-lg bg-panel-2 px-3 py-2 text-sm">
         <span className="font-medium">Pub Meta (global)</span>
@@ -201,6 +216,15 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
         Shopify via sa référence ; ce qui n&apos;est pas rattaché apparaît en « Autres ».
       </p>
     </Panel>
+  );
+}
+
+function FeeLine({ label, value, currency }: { label: string; value: number; currency: string }) {
+  return (
+    <div className="flex justify-between text-muted">
+      <span>{label}</span>
+      <span className={value ? "text-neg" : ""}>{value ? `−${money(value, currency)}` : "—"}</span>
+    </div>
   );
 }
 
@@ -280,28 +304,37 @@ export function TaxPanel({ tax, currency, periodLabel }: { tax: TaxProjection; c
 
 export function ReconciliationPanel({ r, currency }: { r: Reconciliation; currency: string }) {
   const coherent = Math.abs(r.gap) <= Math.max(50, r.operationalCosts * 0.1);
+  const bankNet = r.bankInflows - r.bankOutflows;
   return (
-    <Panel title="Rapprochement (30 jours)" subtitle="Recoupe la marge opérationnelle avec la compta et la banque">
-      <div className="grid grid-cols-3 gap-3">
+    <Panel title="Rapprochement bancaire (30 jours)" subtitle="Tout ce qui passe réellement par Qonto — vérification (encaissements décalés inclus)">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-lg bg-panel-2 p-3">
-          <div className="text-xs text-muted">Coûts opérationnels</div>
-          <div className="mt-1 text-lg font-semibold">{money(r.operationalCosts, currency)}</div>
+          <div className="text-xs text-muted">Entrées Qonto</div>
+          <div className="mt-1 text-lg font-semibold text-pos">{r.bankInflows > 0 ? money(r.bankInflows, currency) : "—"}</div>
+        </div>
+        <div className="rounded-lg bg-panel-2 p-3">
+          <div className="text-xs text-muted">Sorties Qonto</div>
+          <div className="mt-1 text-lg font-semibold text-neg">{r.bankOutflows > 0 ? `−${money(r.bankOutflows, currency)}` : "—"}</div>
+        </div>
+        <div className="rounded-lg bg-panel-2 p-3">
+          <div className="text-xs text-muted">Mouvement net</div>
+          <div className={`mt-1 text-lg font-semibold ${bankNet >= 0 ? "text-pos" : "text-neg"}`}>
+            {r.bankInflows || r.bankOutflows ? money(bankNet, currency) : "—"}
+          </div>
         </div>
         <div className="rounded-lg bg-panel-2 p-3">
           <div className="text-xs text-muted">Charges Pennylane</div>
           <div className="mt-1 text-lg font-semibold">{r.accountingExpenses > 0 ? money(r.accountingExpenses, currency) : "—"}</div>
         </div>
-        <div className="rounded-lg bg-panel-2 p-3">
-          <div className="text-xs text-muted">Sorties Qonto</div>
-          <div className="mt-1 text-lg font-semibold">{r.bankOutflows > 0 ? money(r.bankOutflows, currency) : "—"}</div>
-        </div>
       </div>
-      {r.accountingExpenses > 0 && (
-        <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${coherent ? "bg-pos/10 text-pos" : "bg-warn/10 text-warn"}`}>
-          Écart marge ↔ compta : <strong>{money(r.gap, currency)}</strong>{" "}
-          {coherent ? "· cohérent ✅" : "· à investiguer"}
-        </div>
-      )}
+      <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted">
+        <span>Coûts opérationnels comptés dans la marge : <strong className="text-white">{money(r.operationalCosts, currency)}</strong></span>
+        {r.accountingExpenses > 0 && (
+          <span className={coherent ? "text-pos" : "text-warn"}>
+            Écart ↔ compta : <strong>{money(r.gap, currency)}</strong> {coherent ? "✅" : "à investiguer"}
+          </span>
+        )}
+      </div>
     </Panel>
   );
 }
