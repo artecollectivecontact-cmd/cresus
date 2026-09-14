@@ -152,7 +152,7 @@ export function DailyChart({
 export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; currency: string; usdPerEur: number }) {
   const regions = bucket.regions ?? [];
   return (
-    <Panel title={`Détail — ${dayLabel(bucket.key)}`} subtitle="Postes de dépense par région (cadres inclus dans l'impression)">
+    <Panel title={`Détail — ${dayLabel(bucket.key)}`} subtitle="Postes par région · Cadres = Artelo (US). UK/EU : cadres inclus dans l'impression (Prodigi).">
       {regions.length === 0 ? (
         <p className="text-sm text-muted">Aucun mouvement ce jour-là.</p>
       ) : (
@@ -163,6 +163,7 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
                 <th className="py-1 pr-3">Région</th>
                 <th className="py-1 px-2 text-right">CA</th>
                 <th className="py-1 px-2 text-right">Impression</th>
+                <th className="py-1 px-2 text-right">Cadres</th>
                 <th className="py-1 px-2 text-right">Livraison</th>
                 <th className="py-1 px-2 text-right">Taxes</th>
               </tr>
@@ -173,6 +174,7 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
                   <td className="py-2 pr-3 font-medium">{REGION_LABELS[r.region] ?? r.region}</td>
                   <td className="py-2 px-2 text-right">{money(r.revenue, currency)}</td>
                   <td className="py-2 px-2 text-right text-neg">{r.print ? `−${money(r.print, currency)}` : "—"}</td>
+                  <td className="py-2 px-2 text-right text-neg">{r.frames ? `−${money(r.frames, currency)}` : "—"}</td>
                   <td className="py-2 px-2 text-right text-neg">{r.shipping ? `−${money(r.shipping, currency)}` : "—"}</td>
                   <td className="py-2 px-2 text-right text-warn">{r.taxes ? money(r.taxes, currency) : "—"}</td>
                 </tr>

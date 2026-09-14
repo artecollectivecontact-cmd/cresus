@@ -478,10 +478,13 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
     // Ventilation régionale (hors pub, qui n'a pas de pays).
     const v = e.amountBase;
     const r = regionOf(e.country);
-    const rb = slot.reg.get(r) || { region: r, revenue: 0, print: 0, shipping: 0, taxes: 0 };
+    const rb = slot.reg.get(r) || { region: r, revenue: 0, print: 0, frames: 0, shipping: 0, taxes: 0 };
     if (e.kind === "revenue") rb.revenue += v;
-    else if (e.kind === "cogs") rb.print += -v;
-    else if (e.kind === "fulfillment" || e.kind === "shipping") rb.shipping += -v;
+    else if (e.kind === "cogs") {
+      // Artelo = cadres ; Printify/Prodigi = impression (prints).
+      if (e.source === "artelo") rb.frames += -v;
+      else rb.print += -v;
+    } else if (e.kind === "fulfillment" || e.kind === "shipping") rb.shipping += -v;
     else if (e.kind === "tax_collected") rb.taxes += v;
     else if (e.kind === "fees") rb.taxes += -v;
     slot.reg.set(r, rb);
@@ -508,10 +511,11 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
           region: r.region,
           revenue: round2(r.revenue),
           print: round2(r.print),
+          frames: round2(r.frames),
           shipping: round2(r.shipping),
           taxes: round2(r.taxes),
         }))
-        .filter((r) => r.revenue !== 0 || r.print !== 0 || r.shipping !== 0 || r.taxes !== 0)
+        .filter((r) => r.revenue !== 0 || r.print !== 0 || r.frames !== 0 || r.shipping !== 0 || r.taxes !== 0)
         .sort((a, b) => (order[a.region] ?? 9) - (order[b.region] ?? 9));
       return b;
     })
@@ -534,10 +538,24 @@ export async function debugSample() {
       .slice(0, 6)
       .map((e) => ({ kind: e.kind, ref: e.ref, country: e.country || "(aucun)", amount: Math.round(e.amountBase) }));
   }
+  // Top bénéficiaires Qonto (sorties) — pour identifier Prodigi/Printify/etc.
+  const qontoByName = new Map<string, number>();
+  for (const e of normalized) {
+    if (e.source === "qonto" && e.kind === "expense") {
+      const name = e.label || "?";
+      qontoByName.set(name, (qontoByName.get(name) ?? 0) + -e.amountBase);
+    }
+  }
+  const qontoTop = [...qontoByName.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([name, total]) => ({ name, total: Math.round(total) }));
+
   return {
     sources: statuses.map((s) => ({ id: s.id, state: s.state, entries: s.entryCount, detail: s.detail })),
     shopifySamples: shopify,
     costSamples: bySource,
+    qontoTop,
   };
 }
 

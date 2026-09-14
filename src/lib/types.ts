@@ -98,8 +98,10 @@ export interface PnLBucket {
 export interface RegionBreak {
   region: string; // "US" | "UK" | "EU" | "Autres"
   revenue: number;
-  /** Coût d'impression (COGS, cadres inclus). */
+  /** Coût d'impression (prints : Printify + Prodigi). */
   print: number;
+  /** Coût des cadres (Artelo ; Prodigi UK/EU les inclut dans l'impression). */
+  frames: number;
   /** Livraison (fulfillment + port). */
   shipping: number;
   /** Taxes : TVA collectée + frais Shopify. */
