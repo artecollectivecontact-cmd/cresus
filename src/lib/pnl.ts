@@ -374,11 +374,32 @@ const EU_COUNTRIES = new Set([
   "EE", "LV", "LT", "CY", "MT", "HR", "BG", "RO", "HU", "PL", "CZ", "DK", "SE",
 ]);
 
+// Certains fournisseurs (Printify) renvoient le NOM complet du pays au lieu du
+// code ISO — on normalise pour un classement fiable des régions.
+const NAME_TO_ISO: Record<string, string> = {
+  "united states": "US", "united states of america": "US", usa: "US", "u.s.a.": "US",
+  "united kingdom": "GB", uk: "GB", "great britain": "GB", england: "GB",
+  france: "FR", germany: "DE", italy: "IT", spain: "ES", belgium: "BE", netherlands: "NL",
+  austria: "AT", portugal: "PT", ireland: "IE", luxembourg: "LU", finland: "FI", greece: "GR",
+  sweden: "SE", denmark: "DK", poland: "PL", czechia: "CZ", "czech republic": "CZ", romania: "RO",
+  hungary: "HU", croatia: "HR", bulgaria: "BG", slovakia: "SK", slovenia: "SI", estonia: "EE",
+  latvia: "LV", lithuania: "LT", cyprus: "CY", malta: "MT",
+  canada: "CA", australia: "AU", switzerland: "CH", norway: "NO", "new zealand": "NZ",
+};
+
+function toIso(country?: string): string | undefined {
+  if (!country) return undefined;
+  const c = country.trim();
+  if (c.length === 2) return c.toUpperCase();
+  return NAME_TO_ISO[c.toLowerCase()] || c.toUpperCase();
+}
+
 function regionOf(country?: string): string {
-  if (!country) return "Autres";
-  if (country === "US") return "US";
-  if (country === "GB") return "UK";
-  if (EU_COUNTRIES.has(country)) return "EU";
+  const iso = toIso(country);
+  if (!iso) return "Autres";
+  if (iso === "US") return "US";
+  if (iso === "GB") return "UK";
+  if (EU_COUNTRIES.has(iso)) return "EU";
   return "Autres";
 }
 
