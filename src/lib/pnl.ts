@@ -327,15 +327,29 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
     return { ...e, amountBase: e.amount * rate, baseCurrency: BASE_CURRENCY, fxRate: rate };
   });
 
-  // 5) Rattachement de la région des coûts POD : ces écritures n'ont pas de pays,
-  //    on le déduit de la commande Shopify correspondante (via la référence).
+  // 5) Rattachement de la région des coûts POD qui n'ont pas de pays natif :
+  //    on le déduit de la commande Shopify correspondante. Le matching essaie
+  //    plusieurs clés (référence normalisée, chiffres seuls, ID legacy Shopify)
+  //    car chaque fournisseur nomme la référence différemment.
   const countryByRef = new Map<string, string>();
+  const addKey = (k: string | undefined, country: string) => {
+    if (k) countryByRef.set(k, country);
+  };
   for (const e of normalized) {
-    if (e.kind === "revenue" && e.ref && e.country) countryByRef.set(normRef(e.ref), e.country);
+    if (e.kind === "revenue" && e.country) {
+      if (e.ref) {
+        addKey(normRef(e.ref), e.country);
+        addKey(digitsOnly(e.ref), e.country);
+      }
+      const legacy = e.meta?.legacyId;
+      if (typeof legacy === "string") addKey(legacy, e.country);
+    }
   }
+  const lookup = (ref: string): string | undefined =>
+    countryByRef.get(normRef(ref)) || countryByRef.get(digitsOnly(ref));
   for (const e of normalized) {
     if (!e.country && e.ref && (e.kind === "cogs" || e.kind === "fulfillment" || e.kind === "shipping")) {
-      const c = countryByRef.get(normRef(e.ref));
+      const c = lookup(e.ref);
       if (c) e.country = c;
     }
   }
@@ -347,6 +361,10 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
 /** Normalise une référence de commande pour le matching (#4683 -> 4683). */
 function normRef(ref: string): string {
   return ref.trim().replace(/^#/, "").toLowerCase();
+}
+/** Ne garde que les chiffres d'une référence (utile pour matcher les numéros). */
+function digitsOnly(ref: string): string {
+  return ref.replace(/\D/g, "");
 }
 
 // --- Régions -----------------------------------------------------------------
@@ -477,6 +495,29 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
       return b;
     })
     .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+// --- Diagnostic --------------------------------------------------------------
+
+/** Échantillon pour comprendre le rattachement pays des coûts POD. */
+export async function debugSample() {
+  const { normalized, statuses } = await getData();
+  const shopify = normalized
+    .filter((e) => e.source === "shopify" && e.kind === "revenue")
+    .slice(0, 8)
+    .map((e) => ({ ref: e.ref, legacyId: e.meta?.legacyId, country: e.country }));
+  const bySource: Record<string, unknown[]> = {};
+  for (const src of ["printify", "prodigi", "artelo"]) {
+    bySource[src] = normalized
+      .filter((e) => e.source === src && (e.kind === "cogs" || e.kind === "fulfillment"))
+      .slice(0, 6)
+      .map((e) => ({ kind: e.kind, ref: e.ref, country: e.country || "(aucun)", amount: Math.round(e.amountBase) }));
+  }
+  return {
+    sources: statuses.map((s) => ({ id: s.id, state: s.state, entries: s.entryCount, detail: s.detail })),
+    shopifySamples: shopify,
+    costSamples: bySource,
+  };
 }
 
 // --- Point d'entrée ----------------------------------------------------------

@@ -81,6 +81,7 @@ interface TxFee {
 interface GqlOrder {
   id: string;
   name: string;
+  legacyResourceId: string;
   createdAt: string;
   currentSubtotalPriceSet: { shopMoney: Money };
   currentTotalTaxSet: { shopMoney: Money };
@@ -113,6 +114,7 @@ const ORDERS_QUERY = `
         id
         name
         createdAt
+        legacyResourceId
         currentSubtotalPriceSet { shopMoney { amount currencyCode } }
         currentTotalTaxSet { shopMoney { amount currencyCode } }
         totalShippingPriceSet { shopMoney { amount currencyCode } }
@@ -178,6 +180,7 @@ export const shopifyConnector: Connector = {
             label: `Commande ${o.name}`,
             country,
             ref: o.name,
+            meta: { legacyId: o.legacyResourceId },
           });
           if (tax > 0) {
             entries.push({
