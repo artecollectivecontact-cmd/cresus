@@ -92,6 +92,8 @@ export const arteloConnector: Connector = {
           const ship = n(d, "arteloShipping");
           const ref = s(o, ["orderId", "name"]) || s(o, ["id"]);
           const oid = s(o, ["id"]) || iso;
+          const addr = (o.customerAddress as Json) || undefined;
+          const country = addr ? s(addr, ["countryCode", "country"]) : undefined;
           if (cogs > 0) {
             entries.push({
               id: `artelo:order:${oid}:cogs`,
@@ -101,6 +103,7 @@ export const arteloConnector: Connector = {
               amount: -cogs,
               currency: CURRENCY,
               label: `Prod. Artelo${ref ? ` (${ref})` : ""}`,
+              country,
               ref,
             });
           }
@@ -113,6 +116,7 @@ export const arteloConnector: Connector = {
               amount: -ship,
               currency: CURRENCY,
               label: `Expédition Artelo${ref ? ` (${ref})` : ""}`,
+              country,
               ref,
             });
           }

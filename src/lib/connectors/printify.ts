@@ -20,6 +20,7 @@ interface PrintifyOrder {
   metadata?: { shop_order_label?: string; order_type?: string };
   total_price?: number; // centimes, prix produit
   total_shipping?: number; // centimes
+  address_to?: { country?: string }; // pays de destination (ISO)
   line_items?: { metadata?: { price?: number } }[];
 }
 
@@ -60,6 +61,7 @@ export const printifyConnector: Connector = {
         const ts = new Date(o.created_at.replace(" ", "T")).getTime();
         if (isNaN(ts) || ts < from || ts >= to) return;
         const ref = o.metadata?.shop_order_label;
+        const country = o.address_to?.country; // pays de destination (ISO)
         const iso = new Date(ts).toISOString();
         const cogs = (o.total_price ?? 0) / 100;
         const ship = (o.total_shipping ?? 0) / 100;
@@ -72,6 +74,7 @@ export const printifyConnector: Connector = {
             amount: -cogs,
             currency: "USD",
             label: `Prod. Printify${ref ? ` (${ref})` : ""}`,
+            country,
             ref,
           });
         }
@@ -84,6 +87,7 @@ export const printifyConnector: Connector = {
             amount: -ship,
             currency: "USD",
             label: `Expédition Printify${ref ? ` (${ref})` : ""}`,
+            country,
             ref,
           });
         }

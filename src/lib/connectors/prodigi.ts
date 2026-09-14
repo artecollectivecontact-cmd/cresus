@@ -15,22 +15,27 @@ interface ProdigiOrder {
   id: string;
   created: string;
   merchantReference?: string;
-  charges?: { totalCost?: { amount: string; currency: string } }[];
+  recipient?: { address?: { countryCode?: string } };
+  charges?: { chargeType?: string; totalCost?: { amount: string; currency: string } }[];
 }
 
-// Somme de toutes les charges Prodigi (Item + Shipping + éventuels crédits).
+// Sépare Impression (Item/Other) et Livraison (Shipping) depuis les charges.
 // `amount` : positif = débit (coût), négatif = crédit (remboursement).
 // NB : `charges` reste vide tant que Prodigi n'a pas facturé la commande, donc
 // une commande toute récente peut renvoyer un coût de 0 (normal).
-function sumCharges(o: ProdigiOrder): { cost: number; currency: string } {
-  let cost = 0;
+function splitCharges(o: ProdigiOrder): { print: number; ship: number; currency: string } {
+  let print = 0;
+  let ship = 0;
   let currency = "GBP";
   for (const c of o.charges ?? []) {
     const amt = c.totalCost?.amount;
-    if (amt != null && !isNaN(Number(amt))) cost += Number(amt);
+    if (amt == null || isNaN(Number(amt))) continue;
+    const val = Number(amt);
     if (c.totalCost?.currency) currency = c.totalCost.currency;
+    if (c.chargeType === "Shipping") ship += val;
+    else print += val; // Item, Other, Refund...
   }
-  return { cost, currency };
+  return { print, ship, currency };
 }
 
 export const prodigiConnector: Connector = {
@@ -85,17 +90,35 @@ export const prodigiConnector: Connector = {
       for (const batch of batches) {
         for (const o of batch) {
           const ts = new Date(o.created).getTime();
-          const { cost, currency } = sumCharges(o);
-          if (cost > 0) {
+          const iso = isNaN(ts) ? new Date().toISOString() : new Date(ts).toISOString();
+          const { print, ship, currency } = splitCharges(o);
+          const country = o.recipient?.address?.countryCode; // pays de destination (UK/EU/…)
+          const ref = o.merchantReference;
+          const label = `Prodigi${ref ? ` (${ref})` : ""}`;
+          if (print !== 0) {
             entries.push({
               id: `prodigi:order:${o.id}:cogs`,
               source: "prodigi",
               kind: "cogs",
-              occurredAt: isNaN(ts) ? new Date().toISOString() : new Date(ts).toISOString(),
-              amount: -cost,
+              occurredAt: iso,
+              amount: -print,
               currency,
-              label: `Prod. Prodigi${o.merchantReference ? ` (${o.merchantReference})` : ""}`,
-              ref: o.merchantReference,
+              label: `Prod. ${label}`,
+              country,
+              ref,
+            });
+          }
+          if (ship !== 0) {
+            entries.push({
+              id: `prodigi:order:${o.id}:ship`,
+              source: "prodigi",
+              kind: "fulfillment",
+              occurredAt: iso,
+              amount: -ship,
+              currency,
+              label: `Livraison ${label}`,
+              country,
+              ref,
             });
           }
         }
