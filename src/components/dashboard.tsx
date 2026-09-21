@@ -1,5 +1,7 @@
-import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak, ConversionFeeReport } from "@/lib/types";
+import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak, ConversionFeeReport, ConversionFeeSlice } from "@/lib/types";
 import { money, pct, usd, dayLabel, signedClass } from "@/lib/format";
+
+export type PeriodChoice = PeriodKey | "custom";
 
 const REGION_LABELS: Record<string, string> = {
   US: "🇺🇸 États-Unis", UK: "🇬🇧 Royaume-Uni", EU: "🇪🇺 Europe", Autres: "🌍 Autres",
@@ -23,12 +25,13 @@ function compact(n: number, currency: string): string {
 
 // --- Sélecteur de période ----------------------------------------------------
 
-export function PeriodTabs({ value, onChange }: { value: PeriodKey; onChange: (k: PeriodKey) => void }) {
-  const tabs: { key: PeriodKey; label: string }[] = [
+export function PeriodTabs({ value, onChange }: { value: PeriodChoice; onChange: (k: PeriodChoice) => void }) {
+  const tabs: { key: PeriodChoice; label: string }[] = [
     { key: "day", label: "Jour" },
     { key: "week", label: "Semaine" },
     { key: "d14", label: "14 jours" },
     { key: "d30", label: "30 jours" },
+    { key: "custom", label: "Perso" },
   ];
   return (
     <div className="inline-flex rounded-lg border border-line bg-panel p-1 text-sm">
@@ -43,6 +46,48 @@ export function PeriodTabs({ value, onChange }: { value: PeriodKey; onChange: (k
           {t.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** Sélecteur de dates pour la période perso (bornes limitées aux 30 jours chargés). */
+export function CustomRange({
+  from,
+  to,
+  min,
+  max,
+  onChange,
+}: {
+  from: string;
+  to: string;
+  min: string;
+  max: string;
+  onChange: (from: string, to: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <label className="flex items-center gap-1 text-muted">
+        Du
+        <input
+          type="date"
+          value={from}
+          min={min}
+          max={to}
+          onChange={(e) => onChange(e.target.value, to)}
+          className="rounded-md border border-line bg-panel-2 px-2 py-1 text-white [color-scheme:dark]"
+        />
+      </label>
+      <label className="flex items-center gap-1 text-muted">
+        au
+        <input
+          type="date"
+          value={to}
+          min={from}
+          max={max}
+          onChange={(e) => onChange(from, e.target.value)}
+          className="rounded-md border border-line bg-panel-2 px-2 py-1 text-white [color-scheme:dark]"
+        />
+      </label>
     </div>
   );
 }
@@ -92,22 +137,29 @@ export function DailyChart({
   currency,
   usdPerEur,
   period,
+  range,
   selected,
   onSelect,
 }: {
   daily: PnLBucket[];
   currency: string;
   usdPerEur: number;
-  period: PeriodKey;
+  period: PeriodChoice;
+  range?: { from: string; to: string } | null;
   selected: string | null;
   onSelect: (key: string) => void;
 }) {
-  const n = RANGE_DAYS[period];
-  const days = daily.slice(-n);
+  const days =
+    period === "custom" && range
+      ? daily.filter((d) => d.key >= range.from && d.key <= range.to)
+      : daily.slice(-RANGE_DAYS[period === "custom" ? "d30" : period]);
+  const n = days.length;
   const max = Math.max(1, ...days.map((d) => Math.max(d.revenue, Math.abs(d.net))));
   const showNet = n <= 14; // au-delà, trop serré : on garde le survol
+  const title =
+    period === "custom" && range ? `${dayLabel(range.from)} → ${dayLabel(range.to)}` : RANGE_TITLE[period === "custom" ? "d30" : period];
   return (
-    <Panel title={RANGE_TITLE[period]} subtitle="Barre = CA · chiffre = marge nette · clique un jour pour le détail">
+    <Panel title={title} subtitle="Barre = CA · chiffre = marge nette · clique un jour pour le détail">
       <div className="flex items-end gap-1 h-64">
         {days.map((d) => {
           const revH = (d.revenue / max) * 100;
@@ -343,61 +395,72 @@ export function ReconciliationPanel({ r, currency }: { r: Reconciliation; curren
 
 // --- Frais de conversion de devise ($/£ -> €) par mois -----------------------
 
-export function ConversionFeePanel({ cf, currency }: { cf: ConversionFeeReport; currency: string }) {
-  const withData = cf.months.filter((m) => m.total > 0);
-  const grandTotal = withData.reduce((s, m) => s + m.total, 0);
-  const arteloTotal = withData.reduce((s, m) => s + (m.bySource.artelo?.fee ?? 0), 0);
+export function ConversionFeePanel({
+  slice,
+  monthly,
+  currency,
+  periodLabel,
+}: {
+  slice: ConversionFeeSlice;
+  monthly: ConversionFeeReport;
+  currency: string;
+  periodLabel: string;
+}) {
+  const periodRows = monthly.sources
+    .map((id) => ({ id, line: slice.bySource[id] }))
+    .filter((r) => r.line && r.line.fee > 0);
+  const arteloPeriod = slice.bySource.artelo?.fee ?? 0;
+  const monthsWithData = monthly.months.filter((m) => m.total > 0);
   return (
     <Panel
-      title="Frais de conversion $/£ → €"
-      subtitle={`Marge de change estimée à ${pct(cf.feeRate)} sur les dépenses en devise étrangère · par mois`}
+      title="Frais de conversion $ → €"
+      subtitle={`Taux banque estimé à ${pct(slice.feeRate)} sur les factures en USD · ${periodLabel.toLowerCase()}`}
     >
-      {withData.length === 0 ? (
-        <p className="text-sm text-muted">Aucune dépense en devise étrangère sur la période chargée.</p>
+      {/* Total de la période sélectionnée (suit le filtre Jour/Semaine/…/Perso) */}
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        <div className="rounded-lg bg-panel-2 p-3">
+          <div className="text-xs text-muted">Frais Artelo · {periodLabel.toLowerCase()}</div>
+          <div className="mt-1 text-xl font-semibold text-neg">{arteloPeriod ? `−${money(arteloPeriod, currency)}` : "—"}</div>
+        </div>
+        <div className="rounded-lg bg-panel-2 p-3">
+          <div className="text-xs text-muted">Total frais de change · {periodLabel.toLowerCase()}</div>
+          <div className="mt-1 text-xl font-semibold text-neg">{slice.total ? `−${money(slice.total, currency)}` : "—"}</div>
+        </div>
+      </div>
+
+      {periodRows.length === 0 ? (
+        <p className="text-sm text-muted">Aucune facture en USD sur cette période.</p>
       ) : (
-        <>
-          <div className="mb-3 grid grid-cols-2 gap-3">
-            <div className="rounded-lg bg-panel-2 p-3">
-              <div className="text-xs text-muted">Frais Artelo (période chargée)</div>
-              <div className="mt-1 text-xl font-semibold text-neg">−{money(arteloTotal, currency)}</div>
+        <div className="space-y-1">
+          {periodRows.map((r) => (
+            <div key={r.id} className="flex justify-between text-sm text-muted">
+              <span>
+                {SOURCE_LABELS[r.id] ?? r.id}
+                <span className="ml-1 text-xs">({compact(r.line!.spendBase, currency)} en {r.line!.currency})</span>
+              </span>
+              <span className="text-neg">−{money(r.line!.fee, currency)}</span>
             </div>
-            <div className="rounded-lg bg-panel-2 p-3">
-              <div className="text-xs text-muted">Total frais de change</div>
-              <div className="mt-1 text-xl font-semibold text-neg">−{money(grandTotal, currency)}</div>
-            </div>
-          </div>
-          <div className="space-y-3">
-            {withData.map((m) => {
-              const rows = cf.sources
-                .map((id) => ({ id, line: m.bySource[id] }))
-                .filter((r) => r.line && r.line.fee > 0);
-              return (
-                <div key={m.month} className="rounded-lg bg-panel-2 px-3 py-2">
-                  <div className="mb-1 flex items-center justify-between">
-                    <span className="text-sm font-medium">{m.label}</span>
-                    <span className="text-sm font-semibold text-neg">−{money(m.total, currency)}</span>
-                  </div>
-                  <div className="space-y-1">
-                    {rows.map((r) => (
-                      <div key={r.id} className="flex justify-between text-sm text-muted">
-                        <span>
-                          {SOURCE_LABELS[r.id] ?? r.id}
-                          <span className="ml-1 text-xs">
-                            ({compact(r.line!.spendBase, currency)} en {r.line!.currency})
-                          </span>
-                        </span>
-                        <span className="text-neg">−{money(r.line!.fee, currency)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
+          ))}
+        </div>
       )}
+
+      {/* Historique par mois (indépendant du filtre) */}
+      {monthsWithData.length > 0 && (
+        <div className="mt-4 border-t border-line pt-3">
+          <div className="mb-2 text-xs uppercase tracking-wide text-muted">Historique par mois</div>
+          <div className="space-y-2">
+            {monthsWithData.map((m) => (
+              <div key={m.month} className="flex items-center justify-between text-sm">
+                <span>{m.label}</span>
+                <span className="font-medium text-neg">−{money(m.total, currency)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <ul className="mt-3 space-y-0.5 text-[11px] text-muted">
-        {cf.notes.map((n, i) => (
+        {monthly.notes.map((n, i) => (
           <li key={i}>• {n}</li>
         ))}
       </ul>

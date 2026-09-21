@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { PeriodKey, PnLReport } from "@/lib/types";
+import type { PnLReport, PeriodSlice } from "@/lib/types";
 import { LoadingScreen } from "./LoadingScreen";
 import {
   PeriodTabs,
+  CustomRange,
   KpiRow,
   DailyChart,
   DayDetail,
@@ -13,6 +14,7 @@ import {
   ReconciliationPanel,
   ConversionFeePanel,
   SourceStatusPanel,
+  type PeriodChoice,
 } from "./dashboard";
 
 export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
@@ -20,9 +22,15 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [period, setPeriod] = useState<PeriodKey>("day");
+  const [period, setPeriod] = useState<PeriodChoice>("day");
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const started = useRef(false);
+
+  // Période perso (dates bornées aux 30 jours chargés).
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [customSlice, setCustomSlice] = useState<PeriodSlice | null>(null);
+  const [customLoading, setCustomLoading] = useState(false);
 
   useEffect(() => {
     if (started.current) return;
@@ -44,7 +52,6 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
         clearInterval(timer);
         setReport(data as PnLReport);
         setProgress(1);
-        // On laisse voir les barres se compléter un court instant.
         setTimeout(() => setLoading(false), 650);
       })
       .catch((e) => {
@@ -54,6 +61,37 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
 
     return () => clearInterval(timer);
   }, []);
+
+  // Valeurs par défaut de la période perso dès que les données sont là (7 j).
+  useEffect(() => {
+    if (!report || customTo) return;
+    const keys = report.daily.map((d) => d.key);
+    if (keys.length === 0) return;
+    setCustomTo(keys[keys.length - 1]);
+    setCustomFrom(keys[Math.max(0, keys.length - 7)]);
+  }, [report, customTo]);
+
+  // Calcul de la période perso côté serveur (données déjà en cache -> rapide).
+  useEffect(() => {
+    if (period !== "custom" || !customFrom || !customTo) return;
+    let cancelled = false;
+    setCustomLoading(true);
+    fetch(`/api/pnl?from=${customFrom}&to=${customTo}`, { cache: "no-store" })
+      .then(async (res) => {
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        if (!cancelled) setCustomSlice(data.slice as PeriodSlice);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e.message || "Erreur période perso");
+      })
+      .finally(() => {
+        if (!cancelled) setCustomLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [period, customFrom, customTo]);
 
   if (error && !report) {
     return (
@@ -76,9 +114,19 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
     return <LoadingScreen progress={progress} finalSources={report?.sources} error={error} />;
   }
 
-  const slice = report.periods[period];
-  const detailKey = selectedDay ?? report.daily[report.daily.length - 1]?.key ?? null;
+  const isCustom = period === "custom";
+  const slice: PeriodSlice | null = isCustom ? customSlice : report.periods[period];
+  const range = isCustom && customFrom && customTo ? { from: customFrom, to: customTo } : null;
+
+  // Jour de détail : borné à la fenêtre affichée.
+  const windowDays = range
+    ? report.daily.filter((d) => d.key >= range.from && d.key <= range.to)
+    : report.daily;
+  const detailKey = selectedDay ?? windowDays[windowDays.length - 1]?.key ?? null;
   const detailBucket = report.daily.find((d) => d.key === detailKey) ?? null;
+
+  const minDay = report.daily[0]?.key ?? "";
+  const maxDay = report.daily[report.daily.length - 1]?.key ?? "";
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-6" style={{ paddingInline: "max(16px, env(safe-area-inset-left))" }}>
@@ -110,15 +158,37 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
       )}
 
       {/* Sélecteur de période */}
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <PeriodTabs value={period} onChange={setPeriod} />
-        <span className="text-sm text-muted">{slice.label}</span>
+        {isCustom ? (
+          <CustomRange
+            from={customFrom}
+            to={customTo}
+            min={minDay}
+            max={maxDay}
+            onChange={(f, t) => {
+              setCustomFrom(f);
+              setCustomTo(t);
+              setSelectedDay(null);
+            }}
+          />
+        ) : (
+          <span className="text-sm text-muted">{report.periods[period].label}</span>
+        )}
       </div>
 
-      {/* KPI de la période */}
-      <div className="mb-5">
-        <KpiRow b={slice.bucket} currency={report.currency} usdPerEur={report.usdPerEur} />
-      </div>
+      {slice ? (
+        <>
+          {/* KPI de la période */}
+          <div className="mb-5">
+            <KpiRow b={slice.bucket} currency={report.currency} usdPerEur={report.usdPerEur} />
+          </div>
+        </>
+      ) : (
+        <div className="mb-5 rounded-xl border border-line bg-panel p-6 text-center text-sm text-muted">
+          {customLoading ? "Calcul de la période…" : "Choisis deux dates."}
+        </div>
+      )}
 
       {/* Graphe (suit la période) — pleine largeur, cliquable */}
       <div className="mb-4">
@@ -127,6 +197,7 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
           currency={report.currency}
           usdPerEur={report.usdPerEur}
           period={period}
+          range={range}
           selected={detailKey}
           onSelect={setSelectedDay}
         />
@@ -139,26 +210,35 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
         </div>
       )}
 
-      {/* Par source (période) + TVA en dessous */}
-      <div className="mb-4">
-        <SourceBreakdown
-          bySource={slice.bySource}
-          sources={report.sources}
-          currency={report.currency}
-          periodLabel={slice.label}
-        />
-      </div>
+      {slice && (
+        <>
+          {/* Par source (période) */}
+          <div className="mb-4">
+            <SourceBreakdown
+              bySource={slice.bySource}
+              sources={report.sources}
+              currency={report.currency}
+              periodLabel={slice.label}
+            />
+          </div>
 
-      <div className="mb-4">
-        <TaxPanel tax={slice.tax} currency={report.currency} periodLabel={slice.label} />
-      </div>
+          <div className="mb-4">
+            <TaxPanel tax={slice.tax} currency={report.currency} periodLabel={slice.label} />
+          </div>
+
+          <div className="mb-4">
+            <ConversionFeePanel
+              slice={slice.conversionFee}
+              monthly={report.conversionFees}
+              currency={report.currency}
+              periodLabel={slice.label}
+            />
+          </div>
+        </>
+      )}
 
       <div className="mb-4">
         <ReconciliationPanel r={report.reconciliation} currency={report.currency} />
-      </div>
-
-      <div className="mb-4">
-        <ConversionFeePanel cf={report.conversionFees} currency={report.currency} />
       </div>
 
       <div className="mb-4">

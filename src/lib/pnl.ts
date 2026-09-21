@@ -3,6 +3,7 @@ import type {
   ConversionFeeLine,
   ConversionFeeMonth,
   ConversionFeeReport,
+  ConversionFeeSlice,
   LedgerEntry,
   NormalizedEntry,
   PeriodKey,
@@ -422,7 +423,12 @@ interface Dated {
   day: string;
 }
 
-function aggregatePeriod(dated: Dated[], key: PeriodKey, label: string, pred: (d: string) => boolean): PeriodSlice {
+function aggregatePeriod(
+  dated: Dated[],
+  key: PeriodKey | "custom",
+  label: string,
+  pred: (d: string) => boolean
+): PeriodSlice {
   const bucket = emptyBucket(key, new Date().toISOString());
   const refs = new Set<string>();
   const bySource = initBySource();
@@ -436,7 +442,8 @@ function aggregatePeriod(dated: Dated[], key: PeriodKey, label: string, pred: (d
   }
   finalizeBucket(bucket, refs.size);
   const tax = projectTax(inWindow, bucket.net);
-  return { key, label, bucket, bySource, tax };
+  const conversionFee = conversionFeeFor(dated, pred);
+  return { key, label, bucket, bySource, tax, conversionFee };
 }
 
 function reconcileSums(
@@ -528,11 +535,41 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
 
 // --- Frais de conversion de devise (spread carte/banque) ---------------------
 
-// Sources réglées en devise étrangère (Artelo & Printify en USD, Prodigi en
-// GBP, Meta selon le compte). Shopify est exclu : les frais de change côté
-// encaissement sont déjà remontés en réel (foreign_exchange_fee). Qonto et
-// Pennylane sont en EUR (miroirs), donc sans frais de conversion propres.
+// Sources potentiellement réglées en USD (Artelo & Printify surtout). Le taux
+// de change n'est appliqué QUE sur les factures en USD : c'est la banque qui
+// applique son taux lors du règlement carte. Les factures déjà en EUR (Qonto,
+// Pennylane) et Shopify (frais de change à l'encaissement déjà remontés en
+// réel) sont exclus. Prodigi (GBP) n'entre pas dans ce calcul.
 const FX_COST_SOURCES: SourceId[] = ["artelo", "printify", "prodigi", "meta"];
+
+// Devise sur laquelle la banque applique un taux de conversion à la charge.
+const FX_FEE_CURRENCY = "USD";
+
+/**
+ * Calcule les frais de conversion USD -> EUR estimés sur une fenêtre (prédicat
+ * sur le jour). Uniquement les dépenses (sorties) facturées en USD ; le spread
+ * bancaire est modélisé par FX_FEE_RATE appliqué au montant converti en EUR.
+ */
+function conversionFeeFor(dated: Dated[], pred: (d: string) => boolean): ConversionFeeSlice {
+  const bySource: Partial<Record<SourceId, ConversionFeeLine>> = {};
+  for (const { e, day } of dated) {
+    if (!pred(day)) continue;
+    if (e.currency !== FX_FEE_CURRENCY) continue; // taux banque : factures en $ seulement
+    if (!FX_COST_SOURCES.includes(e.source)) continue;
+    if (e.amountBase >= 0) continue; // seules les sorties (dépenses)
+    const cur = bySource[e.source] ?? { currency: e.currency, spendBase: 0, fee: 0 };
+    cur.spendBase += -e.amountBase;
+    bySource[e.source] = cur;
+  }
+  let total = 0;
+  for (const k of Object.keys(bySource) as SourceId[]) {
+    const l = bySource[k]!;
+    l.spendBase = round2(l.spendBase);
+    l.fee = round2(l.spendBase * FX_FEE_RATE);
+    total += l.fee;
+  }
+  return { currency: BASE_CURRENCY, feeRate: FX_FEE_RATE, total: round2(total), bySource };
+}
 
 /** Ordre d'affichage : Artelo en tête (le plus concerné), puis les autres. */
 function fxSourceOrder(id: SourceId): number {
@@ -558,7 +595,7 @@ function buildConversionFees(dated: Dated[]): ConversionFeeReport {
   const acc = new Map<string, Map<SourceId, { currency: string; spendBase: number }>>();
   for (const { e, day } of dated) {
     if (!FX_COST_SOURCES.includes(e.source)) continue;
-    if (e.currency === BASE_CURRENCY) continue; // déjà en EUR, aucun change
+    if (e.currency !== FX_FEE_CURRENCY) continue; // taux banque : factures en $ seulement
     if (e.amountBase >= 0) continue; // seules les sorties (dépenses) sont converties
     const month = day.slice(0, 7);
     const bySource = acc.get(month) ?? new Map();
@@ -582,9 +619,9 @@ function buildConversionFees(dated: Dated[]): ConversionFeeReport {
     .sort((a, b) => b.month.localeCompare(a.month)); // plus récent en premier
 
   const notes = [
-    `Estimation : ${(FX_FEE_RATE * 100).toFixed(1)} % de marge de change sur chaque dépense en devise étrangère (ajustable via FX_FEE_RATE).`,
-    "Assiette = dépense fournisseur convertie en EUR au taux mid-market ; le spread réel dépend de votre banque/carte.",
-    "Shopify exclu : les frais de change à l'encaissement sont déjà remontés en réel.",
+    `Estimation : ${(FX_FEE_RATE * 100).toFixed(1)} % de marge de change sur chaque facture en USD (ajustable via FX_FEE_RATE).`,
+    "Le taux n'est appliqué que sur les factures en $ — c'est la banque qui applique son taux au règlement.",
+    "Assiette = dépense convertie en EUR au taux mid-market ; le spread réel dépend de votre banque.",
   ];
 
   return {
@@ -676,6 +713,20 @@ export async function buildReport(): Promise<PnLReport> {
     demo,
     generatedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Agrège une période PERSO définie par deux jours (YYYY-MM-DD) inclus, à partir
+ * des mêmes données mises en cache. Réutilise l'agrégation standard (KPI, par
+ * source, TVA, frais de conversion) — utilisé par /api/pnl?from=&to=.
+ */
+export async function buildCustomSlice(fromDay: string, toDay: string): Promise<PeriodSlice> {
+  const { normalized } = await getData();
+  const dated: Dated[] = normalized.map((e) => ({ e, day: localParts(e.occurredAt).day }));
+  const [lo, hi] = fromDay <= toDay ? [fromDay, toDay] : [toDay, fromDay];
+  const slice = aggregatePeriod(dated, "custom", "Période perso", (d) => d >= lo && d <= hi);
+  slice.range = { from: lo, to: hi };
+  return slice;
 }
 
 function buildReconciliation(

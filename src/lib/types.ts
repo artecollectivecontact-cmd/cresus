@@ -111,13 +111,28 @@ export interface RegionBreak {
 export type PeriodKey = "day" | "week" | "d14" | "d30";
 export type BySource = Record<SourceId, { net: number; revenue: number; cost: number }>;
 
-/** Tout ce qu'il faut pour afficher une période (jour, semaine, 14j, 30j). */
+/** Tout ce qu'il faut pour afficher une période (jour, semaine, 14j, 30j, perso). */
 export interface PeriodSlice {
-  key: PeriodKey;
+  key: PeriodKey | "custom";
   label: string;
   bucket: PnLBucket;
   bySource: BySource;
   tax: TaxProjection;
+  /** Frais de conversion de devise estimés sur cette période. */
+  conversionFee: ConversionFeeSlice;
+  /** Bornes du jour (YYYY-MM-DD) pour une période perso. */
+  range?: { from: string; to: string };
+}
+
+/** Frais de conversion de devise agrégés pour une période donnée. */
+export interface ConversionFeeSlice {
+  currency: Currency;
+  /** Taux de marge de change appliqué (ex: 0.02 = 2 %). */
+  feeRate: number;
+  /** Total des frais de conversion sur la période (EUR). */
+  total: number;
+  /** Détail par source réglée en USD (Artelo, Printify...). */
+  bySource: Partial<Record<SourceId, ConversionFeeLine>>;
 }
 
 export interface PnLReport {
