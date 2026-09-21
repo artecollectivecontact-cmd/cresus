@@ -54,6 +54,15 @@ export const ESTIMATED_FULFILLMENT_RATE = Number(process.env.ESTIMATED_FULFILLME
 export const PAYMENT_FEE_RATE = Number(process.env.PAYMENT_FEE_RATE ?? 0.029);
 export const PAYMENT_FEE_FIXED = Number(process.env.PAYMENT_FEE_FIXED ?? 0.3); // par commande, en base currency
 
+/**
+ * Marge de change (spread) appliquée par la banque/carte quand on paie une
+ * facture dans une devise ≠ EUR (Artelo & Printify en USD, Prodigi en GBP).
+ * Le taux mid-market (fx.ts) ne modélise PAS ce coût : on l'estime ici en
+ * pourcentage du montant converti. 2 % couvre le mark-up carte typique
+ * (Visa/Mastercard ~1 % + marge banque). Ajustable via FX_FEE_RATE.
+ */
+export const FX_FEE_RATE = Number(process.env.FX_FEE_RATE ?? 0.02);
+
 export interface SourceMeta {
   id: SourceId;
   label: string;

@@ -1,4 +1,4 @@
-import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak } from "@/lib/types";
+import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak, ConversionFeeReport } from "@/lib/types";
 import { money, pct, usd, dayLabel, signedClass } from "@/lib/format";
 
 const REGION_LABELS: Record<string, string> = {
@@ -337,6 +337,70 @@ export function ReconciliationPanel({ r, currency }: { r: Reconciliation; curren
           </span>
         )}
       </div>
+    </Panel>
+  );
+}
+
+// --- Frais de conversion de devise ($/£ -> €) par mois -----------------------
+
+export function ConversionFeePanel({ cf, currency }: { cf: ConversionFeeReport; currency: string }) {
+  const withData = cf.months.filter((m) => m.total > 0);
+  const grandTotal = withData.reduce((s, m) => s + m.total, 0);
+  const arteloTotal = withData.reduce((s, m) => s + (m.bySource.artelo?.fee ?? 0), 0);
+  return (
+    <Panel
+      title="Frais de conversion $/£ → €"
+      subtitle={`Marge de change estimée à ${pct(cf.feeRate)} sur les dépenses en devise étrangère · par mois`}
+    >
+      {withData.length === 0 ? (
+        <p className="text-sm text-muted">Aucune dépense en devise étrangère sur la période chargée.</p>
+      ) : (
+        <>
+          <div className="mb-3 grid grid-cols-2 gap-3">
+            <div className="rounded-lg bg-panel-2 p-3">
+              <div className="text-xs text-muted">Frais Artelo (période chargée)</div>
+              <div className="mt-1 text-xl font-semibold text-neg">−{money(arteloTotal, currency)}</div>
+            </div>
+            <div className="rounded-lg bg-panel-2 p-3">
+              <div className="text-xs text-muted">Total frais de change</div>
+              <div className="mt-1 text-xl font-semibold text-neg">−{money(grandTotal, currency)}</div>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {withData.map((m) => {
+              const rows = cf.sources
+                .map((id) => ({ id, line: m.bySource[id] }))
+                .filter((r) => r.line && r.line.fee > 0);
+              return (
+                <div key={m.month} className="rounded-lg bg-panel-2 px-3 py-2">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-sm font-medium">{m.label}</span>
+                    <span className="text-sm font-semibold text-neg">−{money(m.total, currency)}</span>
+                  </div>
+                  <div className="space-y-1">
+                    {rows.map((r) => (
+                      <div key={r.id} className="flex justify-between text-sm text-muted">
+                        <span>
+                          {SOURCE_LABELS[r.id] ?? r.id}
+                          <span className="ml-1 text-xs">
+                            ({compact(r.line!.spendBase, currency)} en {r.line!.currency})
+                          </span>
+                        </span>
+                        <span className="text-neg">−{money(r.line!.fee, currency)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      <ul className="mt-3 space-y-0.5 text-[11px] text-muted">
+        {cf.notes.map((n, i) => (
+          <li key={i}>• {n}</li>
+        ))}
+      </ul>
     </Panel>
   );
 }

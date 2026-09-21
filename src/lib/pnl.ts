@@ -1,5 +1,8 @@
 import type {
   BySource,
+  ConversionFeeLine,
+  ConversionFeeMonth,
+  ConversionFeeReport,
   LedgerEntry,
   NormalizedEntry,
   PeriodKey,
@@ -20,6 +23,7 @@ import {
   COST_BASIS,
   ESTIMATED_COGS_RATE,
   ESTIMATED_FULFILLMENT_RATE,
+  FX_FEE_RATE,
   PAYMENT_FEE_RATE,
   PAYMENT_FEE_FIXED,
   SOURCES,
@@ -522,6 +526,76 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
     .sort((a, b) => a.key.localeCompare(b.key));
 }
 
+// --- Frais de conversion de devise (spread carte/banque) ---------------------
+
+// Sources réglées en devise étrangère (Artelo & Printify en USD, Prodigi en
+// GBP, Meta selon le compte). Shopify est exclu : les frais de change côté
+// encaissement sont déjà remontés en réel (foreign_exchange_fee). Qonto et
+// Pennylane sont en EUR (miroirs), donc sans frais de conversion propres.
+const FX_COST_SOURCES: SourceId[] = ["artelo", "printify", "prodigi", "meta"];
+
+/** Ordre d'affichage : Artelo en tête (le plus concerné), puis les autres. */
+function fxSourceOrder(id: SourceId): number {
+  const order: Partial<Record<SourceId, number>> = { artelo: 0, printify: 1, prodigi: 2, meta: 3 };
+  return order[id] ?? 9;
+}
+
+function monthLabel(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  const s = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(d);
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Estime les frais de conversion $/£ -> € que l'on paie réellement quand la
+ * carte règle une facture en devise étrangère. Le taux mid-market (fx.ts) ne
+ * modélise pas ce spread : on applique FX_FEE_RATE sur la dépense convertie,
+ * agrégée par mois civil et par source (Artelo en priorité).
+ */
+function buildConversionFees(dated: Dated[]): ConversionFeeReport {
+  // month -> source -> { currency, spendBase }
+  const acc = new Map<string, Map<SourceId, { currency: string; spendBase: number }>>();
+  for (const { e, day } of dated) {
+    if (!FX_COST_SOURCES.includes(e.source)) continue;
+    if (e.currency === BASE_CURRENCY) continue; // déjà en EUR, aucun change
+    if (e.amountBase >= 0) continue; // seules les sorties (dépenses) sont converties
+    const month = day.slice(0, 7);
+    const bySource = acc.get(month) ?? new Map();
+    const cur = bySource.get(e.source) ?? { currency: e.currency, spendBase: 0 };
+    cur.spendBase += -e.amountBase; // valeur absolue de la dépense en EUR
+    bySource.set(e.source, cur);
+    acc.set(month, bySource);
+  }
+
+  const months: ConversionFeeMonth[] = [...acc.entries()]
+    .map(([month, bySource]) => {
+      const lines: Partial<Record<SourceId, ConversionFeeLine>> = {};
+      let total = 0;
+      for (const [src, { currency, spendBase }] of bySource) {
+        const fee = round2(spendBase * FX_FEE_RATE);
+        lines[src] = { currency, spendBase: round2(spendBase), fee };
+        total += fee;
+      }
+      return { month, label: monthLabel(month), bySource: lines, total: round2(total), currency: BASE_CURRENCY };
+    })
+    .sort((a, b) => b.month.localeCompare(a.month)); // plus récent en premier
+
+  const notes = [
+    `Estimation : ${(FX_FEE_RATE * 100).toFixed(1)} % de marge de change sur chaque dépense en devise étrangère (ajustable via FX_FEE_RATE).`,
+    "Assiette = dépense fournisseur convertie en EUR au taux mid-market ; le spread réel dépend de votre banque/carte.",
+    "Shopify exclu : les frais de change à l'encaissement sont déjà remontés en réel.",
+  ];
+
+  return {
+    feeRate: FX_FEE_RATE,
+    sources: [...FX_COST_SOURCES].sort((a, b) => fxSourceOrder(a) - fxSourceOrder(b)),
+    months,
+    currency: BASE_CURRENCY,
+    notes,
+  };
+}
+
 // --- Diagnostic --------------------------------------------------------------
 
 /** Échantillon pour comprendre le rattachement pays des coûts POD. */
@@ -583,6 +657,9 @@ export async function buildReport(): Promise<PnLReport> {
   const rec = reconcileSums(dated, (d) => d >= from(30));
   const reconciliation = buildReconciliation(opCosts, rec.accounting, rec.bankOut, rec.bankIn, statuses);
 
+  // Frais de conversion de devise (spread), agrégés par mois civil.
+  const conversionFees = buildConversionFees(dated);
+
   // Taux EUR -> USD (fx.rate("USD") = EUR par USD).
   const fx = await getConverter();
   const usdEur = fx.rate("USD");
@@ -595,6 +672,7 @@ export async function buildReport(): Promise<PnLReport> {
     periods,
     sources: statuses,
     reconciliation,
+    conversionFees,
     demo,
     generatedAt: new Date().toISOString(),
   };

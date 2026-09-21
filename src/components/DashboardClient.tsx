@@ -11,6 +11,7 @@ import {
   SourceBreakdown,
   TaxPanel,
   ReconciliationPanel,
+  ConversionFeePanel,
   SourceStatusPanel,
 } from "./dashboard";
 
@@ -154,6 +155,10 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
 
       <div className="mb-4">
         <ReconciliationPanel r={report.reconciliation} currency={report.currency} />
+      </div>
+
+      <div className="mb-4">
+        <ConversionFeePanel cf={report.conversionFees} currency={report.currency} />
       </div>
 
       <div className="mb-4">

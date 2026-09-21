@@ -132,9 +132,44 @@ export interface PnLReport {
   sources: SourceStatus[];
   /** Rapprochement comptable/bancaire (recoupe la marge opérationnelle, 30j). */
   reconciliation: Reconciliation;
+  /** Frais de conversion $/£ -> € estimés, agrégés par mois (surtout Artelo). */
+  conversionFees: ConversionFeeReport;
   /** true si le rapport utilise des données de démonstration (pas de clés API). */
   demo: boolean;
   generatedAt: string;
+}
+
+/** Frais de conversion de devise (spread carte/banque) estimés par mois. */
+export interface ConversionFeeReport {
+  /** Taux de marge de change appliqué (ex: 0.02 = 2 %). */
+  feeRate: number;
+  /** Un poste par source réglée en devise étrangère (Artelo en tête). */
+  sources: SourceId[];
+  /** Une ligne par mois civil, du plus récent au plus ancien. */
+  months: ConversionFeeMonth[];
+  currency: Currency;
+  notes: string[];
+}
+
+export interface ConversionFeeMonth {
+  /** Mois civil "YYYY-MM" dans le fuseau de reporting. */
+  month: string;
+  /** Libellé lisible (ex: "septembre 2026"). */
+  label: string;
+  /** Frais de conversion estimés par source (montant EUR). */
+  bySource: Partial<Record<SourceId, ConversionFeeLine>>;
+  /** Total des frais de conversion du mois (EUR). */
+  total: number;
+  currency: Currency;
+}
+
+export interface ConversionFeeLine {
+  /** Devise d'origine réglée (USD, GBP...). */
+  currency: Currency;
+  /** Dépense convertie en EUR (assiette des frais). */
+  spendBase: number;
+  /** Frais de conversion estimés (EUR) = spendBase * feeRate. */
+  fee: number;
 }
 
 /**
