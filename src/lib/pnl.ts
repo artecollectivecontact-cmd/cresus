@@ -5,6 +5,7 @@ import type {
   ConversionFeeReport,
   ConversionFeeSlice,
   LedgerEntry,
+  RoasStats,
   NormalizedEntry,
   PeriodKey,
   PeriodSlice,
@@ -443,7 +444,38 @@ function aggregatePeriod(
   finalizeBucket(bucket, refs.size);
   const tax = projectTax(inWindow, bucket.net);
   const conversionFee = conversionFeeFor(dated, pred);
-  return { key, label, bucket, bySource, tax, conversionFee };
+  const roas = roasFor(bucket, conversionFee.total);
+  return { key, label, bucket, bySource, tax, conversionFee, roas };
+}
+
+/**
+ * ROAS d'équilibre (break-even) et ROAS constaté.
+ * - Marge de contribution avant pub = CA − coûts variables hors pub
+ *   (impression, cadres, livraison, frais Shopify, frais de change, remboursements).
+ *   Les charges fixes (expenses : salaires, loyer…) sont EXCLUES : le ROAS BE
+ *   mesure la rentabilité produit, pas la couverture des frais de structure.
+ * - ROAS BE = 1 / taux de marge : le CA qu'il faut générer par € de pub pour
+ *   que la pub s'autofinance.
+ * - ROAS constaté = CA total / dépense pub (blended / MER, toutes ventes
+ *   confondues — on n'a pas d'attribution par campagne).
+ */
+function roasFor(b: PnLBucket, conversionFeeTotal: number): RoasStats {
+  const revenue = b.revenue;
+  const variableCosts = round2(b.cogs + b.fulfillment + b.shipping + b.fees + b.refunds + conversionFeeTotal);
+  const contributionMargin = round2(revenue - variableCosts);
+  const marginRate = revenue > 0 ? contributionMargin / revenue : 0;
+  const breakEven = marginRate > 0 ? round2(1 / marginRate) : null;
+  const actual = b.ads > 0 ? round2(revenue / b.ads) : null;
+  return {
+    currency: BASE_CURRENCY,
+    revenue,
+    adSpend: b.ads,
+    variableCosts,
+    contributionMargin,
+    marginRate: round2(marginRate * 1000) / 1000,
+    breakEven,
+    actual,
+  };
 }
 
 function reconcileSums(

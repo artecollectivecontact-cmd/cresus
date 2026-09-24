@@ -120,8 +120,29 @@ export interface PeriodSlice {
   tax: TaxProjection;
   /** Frais de conversion de devise estimés sur cette période. */
   conversionFee: ConversionFeeSlice;
+  /** ROAS constaté et seuil de rentabilité (break-even) sur la période. */
+  roas: RoasStats;
   /** Bornes du jour (YYYY-MM-DD) pour une période perso. */
   range?: { from: string; to: string };
+}
+
+/** ROAS constaté (blended/MER) et ROAS d'équilibre (break-even). */
+export interface RoasStats {
+  currency: Currency;
+  /** CA de la période (base marge). */
+  revenue: number;
+  /** Dépense publicitaire de la période. */
+  adSpend: number;
+  /** Coûts variables hors pub (impression + cadres + livraison + frais + change + remboursements). */
+  variableCosts: number;
+  /** Marge de contribution avant pub = CA − coûts variables hors pub. */
+  contributionMargin: number;
+  /** Taux de marge de contribution = contributionMargin / CA. */
+  marginRate: number;
+  /** ROAS d'équilibre = 1 / marginRate (CA nécessaire par € de pub). null si marge ≤ 0. */
+  breakEven: number | null;
+  /** ROAS constaté (blended) = CA total / dépense pub. null si aucune pub. */
+  actual: number | null;
 }
 
 /** Frais de conversion de devise agrégés pour une période donnée. */

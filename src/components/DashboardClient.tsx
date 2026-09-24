@@ -13,6 +13,7 @@ import {
   TaxPanel,
   ReconciliationPanel,
   ConversionFeePanel,
+  RoasPanel,
   SourceStatusPanel,
   type PeriodChoice,
 } from "./dashboard";
@@ -212,6 +213,11 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
 
       {slice && (
         <>
+          {/* ROAS & seuil de rentabilité (suit la période) */}
+          <div className="mb-4">
+            <RoasPanel roas={slice.roas} currency={report.currency} periodLabel={slice.label} />
+          </div>
+
           {/* Par source (période) */}
           <div className="mb-4">
             <SourceBreakdown

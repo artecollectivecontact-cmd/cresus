@@ -1,4 +1,4 @@
-import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak, ConversionFeeReport, ConversionFeeSlice } from "@/lib/types";
+import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak, ConversionFeeReport, ConversionFeeSlice, RoasStats } from "@/lib/types";
 import { money, pct, usd, dayLabel, signedClass } from "@/lib/format";
 
 export type PeriodChoice = PeriodKey | "custom";
@@ -389,6 +389,64 @@ export function ReconciliationPanel({ r, currency }: { r: Reconciliation; curren
           </span>
         )}
       </div>
+    </Panel>
+  );
+}
+
+// --- ROAS & seuil de rentabilité ---------------------------------------------
+
+/** Formate un ROAS (multiplicateur) : 2.53 -> "2,53×". */
+function roasFmt(v: number | null): string {
+  if (v === null) return "—";
+  return `${v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}×`;
+}
+
+export function RoasPanel({ roas, currency, periodLabel }: { roas: RoasStats; currency: string; periodLabel: string }) {
+  const profitable = roas.actual !== null && roas.breakEven !== null && roas.actual >= roas.breakEven;
+  const verdict =
+    roas.actual === null
+      ? { tone: "text-muted", txt: "Pas de dépense pub sur la période." }
+      : roas.breakEven === null
+      ? { tone: "text-neg", txt: "Marge produit négative : la pub ne peut pas être rentable en l'état." }
+      : profitable
+      ? { tone: "text-pos", txt: "ROAS au-dessus du seuil ✅ — la pub est rentable." }
+      : { tone: "text-neg", txt: "ROAS sous le seuil ⚠️ — la pub perd de l'argent." };
+  return (
+    <Panel
+      title="ROAS & seuil de rentabilité"
+      subtitle={`Break-even vs constaté · ${periodLabel.toLowerCase()}`}
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-xl border border-line bg-panel-2 p-4">
+          <div className="text-xs uppercase tracking-wide text-muted">ROAS d&apos;équilibre (BE)</div>
+          <div className="mt-1 text-3xl font-semibold text-warn">{roasFmt(roas.breakEven)}</div>
+          <div className="mt-1 text-xs text-muted">
+            CA minimum par € de pub pour ne rien perdre
+          </div>
+        </div>
+        <div className={`rounded-xl border p-4 ${profitable ? "border-pos/40" : "border-neg/40"} bg-panel-2`}>
+          <div className="text-xs uppercase tracking-wide text-muted">ROAS constaté (blended)</div>
+          <div className={`mt-1 text-3xl font-semibold ${profitable ? "text-pos" : "text-neg"}`}>{roasFmt(roas.actual)}</div>
+          <div className="mt-1 text-xs text-muted">CA total ÷ dépense pub</div>
+        </div>
+      </div>
+
+      <div className={`mt-3 text-sm ${verdict.tone}`}>{verdict.txt}</div>
+
+      <div className="mt-3 space-y-1 rounded-lg bg-panel-2 px-3 py-2 text-sm text-muted">
+        <div className="flex justify-between"><span>CA (base marge)</span><span className="text-white">{money(roas.revenue, currency)}</span></div>
+        <div className="flex justify-between"><span>Coûts variables hors pub</span><span className="text-neg">−{money(roas.variableCosts, currency)}</span></div>
+        <div className="flex justify-between border-t border-line pt-1">
+          <span>Marge de contribution avant pub</span>
+          <span className={signedClass(roas.contributionMargin)}>{money(roas.contributionMargin, currency)} <span className="text-xs">({pct(roas.marginRate)})</span></span>
+        </div>
+        <div className="flex justify-between"><span>Dépense pub</span><span className="text-neg">{roas.adSpend ? `−${money(roas.adSpend, currency)}` : "—"}</span></div>
+      </div>
+
+      <p className="mt-2 text-[11px] text-muted">
+        ROAS constaté = « blended » (toutes ventes ÷ pub), faute d&apos;attribution par campagne. Le seuil exclut les
+        charges fixes (salaires, loyer…) : il mesure la rentabilité produit. Vise un ROAS constaté &gt; ROAS d&apos;équilibre.
+      </p>
     </Panel>
   );
 }
