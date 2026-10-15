@@ -92,6 +92,8 @@ export interface PnLBucket {
   regions?: RegionBreak[];
   /** Détail des frais Shopify du jour (paiement, change, TVA sur frais). */
   feeBreakdown?: { payments: number; currency: number; vat: number; other: number };
+  /** ROAS & seuils du jour (présent sur les buckets journaliers). */
+  roas?: RoasStats;
 }
 
 /** Ventilation d'une journée par région géographique. */
@@ -104,8 +106,12 @@ export interface RegionBreak {
   frames: number;
   /** Livraison (fulfillment + port). */
   shipping: number;
-  /** Taxes : TVA collectée + frais Shopify. */
+  /** Taxes : TVA collectée + frais Shopify (= tva + fees). */
   taxes: number;
+  /** TVA collectée de la région (dette). */
+  tva: number;
+  /** Frais Shopify de la région (paiement + change + TVA sur frais). */
+  fees: number;
 }
 
 export type PeriodKey = "day" | "week" | "d14" | "d30";

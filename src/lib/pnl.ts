@@ -388,28 +388,30 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
     for (const k of keysOf(e)) coveredKeys.add(k);
   }
 
-  // Couverture réelle par région : CA Shopify vs coût POD réel déjà remonté.
-  // On n'estime QUE les régions sous-couvertes (UK/EU où Prodigi ne remonte
-  // rien) — jamais une région déjà couverte par du réel (US via Printify/Artelo,
-  // y compris les coûts sans référence), pour éviter le double comptage.
-  const regionRevenue: Record<string, number> = {};
-  const regionRealCogs: Record<string, number> = {};
+  // Couverture réelle par (région × jour) : CA Shopify vs coût POD réel déjà
+  // remonté CE JOUR-LÀ. On n'estime QUE les cases (région, jour) sous-couvertes
+  // (UK/EU où Prodigi est muet, ou jours US au-delà du plafond Printify) —
+  // jamais un jour déjà couvert par du réel, pour éviter le double comptage.
+  const rdRevenue = new Map<string, number>();
+  const rdRealCogs = new Map<string, number>();
   for (const e of normalized) {
     if (e.reconcileOnly) continue;
-    const r = regionOf(e.country);
+    const key = `${regionOf(e.country)}|${localParts(e.occurredAt).day}`;
     if (e.source === "shopify" && e.kind === "revenue" && e.id.endsWith(":revenue")) {
-      regionRevenue[r] = (regionRevenue[r] ?? 0) + e.amountBase;
+      rdRevenue.set(key, (rdRevenue.get(key) ?? 0) + e.amountBase);
     } else if (e.kind === "cogs" && !e.meta?.estimated && POD.has(e.source)) {
-      regionRealCogs[r] = (regionRealCogs[r] ?? 0) + -e.amountBase;
+      rdRealCogs.set(key, (rdRealCogs.get(key) ?? 0) + -e.amountBase);
     }
   }
-  // Région sous-couverte : coût réel < moitié du coût attendu (CA × taux).
-  const regionUnderCovered = (r: string): boolean =>
-    (regionRealCogs[r] ?? 0) < (regionRevenue[r] ?? 0) * ESTIMATED_COGS_RATE * 0.5;
+  // Case (région, jour) sous-couverte : coût réel < moitié de l'attendu (CA × taux).
+  const underCovered = (region: string, day: string): boolean => {
+    const key = `${region}|${day}`;
+    return (rdRealCogs.get(key) ?? 0) < (rdRevenue.get(key) ?? 0) * ESTIMATED_COGS_RATE * 0.5;
+  };
 
   // b) Coût estimé plancher : commandes Shopify SANS coût POD rattaché, UNIQUEMENT
-  //    dans les régions sous-couvertes (Prodigi UK/EU muet). Impression +
-  //    expédition estimées, le jour de la vente, dans la région de la commande.
+  //    dans les cases (région, jour) sous-couvertes. Impression + expédition
+  //    estimées, le jour de la vente, dans la région de la commande.
   if (COST_BASIS === "connectors") {
     let estimatedCount = 0;
     let nTotal = 0;
@@ -422,9 +424,10 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
         continue;
       }
       const region = regionOf(o.country);
-      if (o.keys.some((k) => coveredKeys.has(k)) || !regionUnderCovered(region)) {
+      const day = localParts(o.at).day;
+      if (o.keys.some((k) => coveredKeys.has(k)) || !underCovered(region, day)) {
         nCovered++;
-        continue; // couvert par un coût réel, ou région déjà couverte globalement
+        continue; // couvert par un coût réel, ou jour/région déjà couvert
       }
       // US = Printify (prints) ; UK/EU = Prodigi ; défaut Printify.
       const src: SourceId = region === "UK" || region === "EU" ? "prodigi" : "printify";
@@ -619,10 +622,11 @@ function overheadFromQonto(dated: Dated[], pred: (d: string) => boolean): number
 
 type FeeAcc = { payments: number; currency: number; vat: number; other: number };
 
-function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[] {
+function buildDailyBuckets(dated: Dated[], n: number, today: string, overhead30 = 0): PnLBucket[] {
+  const fixedPerDay = round2(overhead30 / 30);
   const map = new Map<
     string,
-    { b: PnLBucket; refs: Set<string>; reg: Map<string, RegionBreak>; fees: FeeAcc }
+    { b: PnLBucket; refs: Set<string>; reg: Map<string, RegionBreak>; fees: FeeAcc; fx: number }
   >();
   for (let i = n - 1; i >= 0; i--) {
     const d = shiftDay(today, -i);
@@ -631,6 +635,7 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
       refs: new Set(),
       reg: new Map(),
       fees: { payments: 0, currency: 0, vat: 0, other: 0 },
+      fx: 0,
     });
   }
   for (const { e, day } of dated) {
@@ -639,18 +644,28 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
     if (!slot) continue;
     addToBucket(slot.b, e, slot.refs);
 
+    // Frais de conversion $ du jour (factures USD des fournisseurs POD/Meta).
+    if (e.currency === FX_FEE_CURRENCY && FX_COST_SOURCES.includes(e.source) && e.amountBase < 0) {
+      slot.fx += -e.amountBase * FX_FEE_RATE;
+    }
+
     // Ventilation régionale (hors pub, qui n'a pas de pays).
     const v = e.amountBase;
     const r = regionOf(e.country);
-    const rb = slot.reg.get(r) || { region: r, revenue: 0, print: 0, frames: 0, shipping: 0, taxes: 0 };
+    const rb = slot.reg.get(r) || { region: r, revenue: 0, print: 0, frames: 0, shipping: 0, taxes: 0, tva: 0, fees: 0 };
     if (e.kind === "revenue") rb.revenue += v;
     else if (e.kind === "cogs") {
       // Artelo = cadres ; Printify/Prodigi = impression (prints).
       if (e.source === "artelo") rb.frames += -v;
       else rb.print += -v;
     } else if (e.kind === "fulfillment" || e.kind === "shipping") rb.shipping += -v;
-    else if (e.kind === "tax_collected") rb.taxes += v;
-    else if (e.kind === "fees") rb.taxes += -v;
+    else if (e.kind === "tax_collected") {
+      rb.taxes += v;
+      rb.tva += v;
+    } else if (e.kind === "fees") {
+      rb.taxes += -v;
+      rb.fees += -v;
+    }
     slot.reg.set(r, rb);
 
     // Détail des frais Shopify par type.
@@ -661,7 +676,7 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
     }
   }
   return [...map.values()]
-    .map(({ b, refs, reg, fees }) => {
+    .map(({ b, refs, reg, fees, fx }) => {
       finalizeBucket(b, refs.size);
       b.feeBreakdown = {
         payments: round2(fees.payments),
@@ -669,6 +684,7 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
         vat: round2(fees.vat),
         other: round2(fees.other),
       };
+      b.roas = roasFor(b, round2(fx), fixedPerDay);
       const order: Record<string, number> = { US: 0, UK: 1, EU: 2, Autres: 3 };
       b.regions = [...reg.values()]
         .map((r) => ({
@@ -678,6 +694,8 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string): PnLBucket[
           frames: round2(r.frames),
           shipping: round2(r.shipping),
           taxes: round2(r.taxes),
+          tva: round2(r.tva),
+          fees: round2(r.fees),
         }))
         .filter((r) => r.revenue !== 0 || r.print !== 0 || r.frames !== 0 || r.shipping !== 0 || r.taxes !== 0)
         .sort((a, b) => (order[a.region] ?? 9) - (order[b.region] ?? 9));
@@ -877,11 +895,11 @@ export async function buildReport(): Promise<PnLReport> {
   const today = todayLocal();
   const from = (n: number) => shiftDay(today, -(n - 1)); // fenêtre de n jours incluant aujourd'hui
 
-  const daily = buildDailyBuckets(dated, 30, today);
-
   // Charges fixes sur 30 j (Qonto hors variable/impôts), proratisées par période.
   const overhead30 = overheadFromQonto(dated, (d) => d >= from(30));
   const fixedFor = (days: number) => round2((overhead30 * days) / 30);
+
+  const daily = buildDailyBuckets(dated, 30, today, overhead30);
 
   const periods: Record<PeriodKey, PeriodSlice> = {
     day: aggregatePeriod(dated, "day", "Aujourd'hui", (d) => d === today, fixedFor(1)),

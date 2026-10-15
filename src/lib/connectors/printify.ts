@@ -77,10 +77,11 @@ export const printifyConnector: Connector = {
       let rebateOrders = 0; // nb de commandes où un rabais a été appliqué
       const labelSamples: string[] = []; // échantillon de libellés d'articles (debug)
       // Limite Printify pour les orders : 10 par page (au-delà => HTTP 400).
-      // Commandes triées de la plus récente à la plus ancienne. Pour éviter les
-      // dizaines de pages en série (=> timeout), on récupère la page 1 puis
-      // TOUTES les autres pages EN PARALLÈLE, plafonnées à MAX_PAGES récentes.
-      const MAX_PAGES = 40;
+      // Commandes triées de la plus récente à la plus ancienne. Pour couvrir
+      // ~30 jours (magasin à ~30-40 cmd/j), il faut beaucoup de pages — réglable
+      // via PRINTIFY_MAX_PAGES. Les jours trop anciens non couverts sont comblés
+      // par le coût estimé plancher côté moteur.
+      const MAX_PAGES = Number(process.env.PRINTIFY_MAX_PAGES ?? 100);
 
       const pushOrder = (o: PrintifyOrder) => {
         const ts = new Date(o.created_at.replace(" ", "T")).getTime();
@@ -147,14 +148,19 @@ export const printifyConnector: Connector = {
         const lastPage = Math.min(first.last_page || 1, MAX_PAGES);
         if (lastPage > 1) {
           const pages = Array.from({ length: lastPage - 1 }, (_, i) => i + 2);
-          const results = await Promise.all(
-            pages.map((p) =>
-              api<{ data: PrintifyOrder[] }>(token, `/shops/${shop.id}/orders.json?page=${p}&limit=10`).catch(
-                () => ({ data: [] as PrintifyOrder[] })
+          // Chunks pour éviter le rate-limit Printify (429) tout en restant
+          // sous le timeout du connecteur.
+          const CHUNK = 20;
+          for (let i = 0; i < pages.length; i += CHUNK) {
+            const results = await Promise.all(
+              pages.slice(i, i + CHUNK).map((p) =>
+                api<{ data: PrintifyOrder[] }>(token, `/shops/${shop.id}/orders.json?page=${p}&limit=10`).catch(
+                  () => ({ data: [] as PrintifyOrder[] })
+                )
               )
-            )
-          );
-          for (const r of results) r.data.forEach(pushOrder);
+            );
+            for (const r of results) r.data.forEach(pushOrder);
+          }
         }
       }
       const rebateNote = rebateOrders > 0 ? ` · rebate ${rebateOrders} cmd` : "";

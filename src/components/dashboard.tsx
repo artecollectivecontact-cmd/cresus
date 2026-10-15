@@ -203,12 +203,22 @@ export function DailyChart({
 
 export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; currency: string; usdPerEur: number }) {
   const regions = bucket.regions ?? [];
+  const roas = bucket.roas;
   return (
-    <Panel title={`Détail — ${dayLabel(bucket.key)}`} subtitle="Postes par région · Cadres = Artelo (US). UK/EU : cadres inclus dans l'impression (Prodigi).">
+    <Panel title={`Détail — ${dayLabel(bucket.key)}`} subtitle="KPI, seuil de rentabilité et postes par région pour ce jour">
+      {/* KPI du jour (comme la période, mais pour le jour cliqué) */}
+      <div className="mb-4">
+        <KpiRow b={bucket} currency={currency} usdPerEur={usdPerEur} />
+      </div>
+
+      {/* Zone seuil de rentabilité (BE) — ce qu'il faut atteindre ce jour-là */}
+      {roas && <DayBreakEven roas={roas} currency={currency} />}
+
+      {/* Postes par région */}
       {regions.length === 0 ? (
-        <p className="text-sm text-muted">Aucun mouvement ce jour-là.</p>
+        <p className="mt-4 text-sm text-muted">Aucun mouvement par région ce jour-là.</p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-muted">
@@ -218,19 +228,31 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
                 <th className="py-1 px-2 text-right">Cadres</th>
                 <th className="py-1 px-2 text-right">Livraison</th>
                 <th className="py-1 px-2 text-right">Taxes</th>
+                <th className="py-1 pl-2 text-right">Total coûts</th>
               </tr>
             </thead>
             <tbody>
-              {regions.map((r) => (
-                <tr key={r.region} className="border-t border-line">
-                  <td className="py-2 pr-3 font-medium">{REGION_LABELS[r.region] ?? r.region}</td>
-                  <td className="py-2 px-2 text-right">{money(r.revenue, currency)}</td>
-                  <td className="py-2 px-2 text-right text-neg">{r.print ? `−${money(r.print, currency)}` : "—"}</td>
-                  <td className="py-2 px-2 text-right text-neg">{r.frames ? `−${money(r.frames, currency)}` : "—"}</td>
-                  <td className="py-2 px-2 text-right text-neg">{r.shipping ? `−${money(r.shipping, currency)}` : "—"}</td>
-                  <td className="py-2 px-2 text-right text-warn">{r.taxes ? money(r.taxes, currency) : "—"}</td>
-                </tr>
-              ))}
+              {regions.map((r) => {
+                const totalCost = r.print + r.frames + r.shipping + r.taxes;
+                return (
+                  <tr key={r.region} className="border-t border-line">
+                    <td className="py-2 pr-3 font-medium">{REGION_LABELS[r.region] ?? r.region}</td>
+                    <td className="py-2 px-2 text-right">{money(r.revenue, currency)}</td>
+                    <td className="py-2 px-2 text-right text-neg">{r.print ? `−${money(r.print, currency)}` : "—"}</td>
+                    <td className="py-2 px-2 text-right text-neg">{r.frames ? `−${money(r.frames, currency)}` : "—"}</td>
+                    <td className="py-2 px-2 text-right text-neg">{r.shipping ? `−${money(r.shipping, currency)}` : "—"}</td>
+                    <td className="py-2 px-2 text-right align-top">
+                      <div className="text-warn">{r.taxes ? money(r.taxes, currency) : "—"}</div>
+                      {r.taxes ? (
+                        <div className="text-[10px] text-muted leading-tight">
+                          TVA {money(r.tva, currency)} · frais {money(r.fees, currency)}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="py-2 pl-2 text-right font-medium text-neg">{totalCost ? `−${money(totalCost, currency)}` : "—"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -259,17 +281,52 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
         </span>
       </div>
 
-      <div className="mt-2 flex items-center justify-between px-1 text-sm">
-        <span className="text-muted">Marge nette du jour</span>
-        <span className={`font-semibold ${signedClass(bucket.net)}`}>
-          {money(bucket.net, currency)} <span className="text-muted text-xs font-normal">≈ {usd(bucket.net, usdPerEur)}</span>
-        </span>
-      </div>
       <p className="mt-2 text-[11px] text-muted">
-        Taxes = TVA collectée + frais Shopify. Les coûts par région sont rattachés à la commande
-        Shopify via sa référence ; ce qui n&apos;est pas rattaché apparaît en « Autres ».
+        Taxes = TVA collectée + frais Shopify (détail sous le montant). Total coûts = impression + cadres + livraison + taxes.
+        Les coûts par région sont rattachés à la commande Shopify ; l&apos;impression manquante (Prodigi non facturé) est estimée.
       </p>
     </Panel>
+  );
+}
+
+/** Zone seuil de rentabilité d'un jour : CA à atteindre pour être rentable. */
+function DayBreakEven({ roas, currency }: { roas: RoasStats; currency: string }) {
+  const okVs = (be: number | null) => roas.actual !== null && be !== null && roas.actual >= be;
+  // CA à atteindre pour couvrir pub + charges fixes (net des coûts produit).
+  const m = roas.marginRate;
+  const beRevAds = m > 0 ? roas.adSpend / m : null;
+  const beRevAll = m > 0 ? (roas.adSpend + roas.fixedCosts) / m : null;
+  const reached = beRevAll !== null && roas.revenue >= beRevAll;
+  const gap = beRevAll !== null ? Math.abs(roas.revenue - beRevAll) : 0;
+  return (
+    <div className="rounded-xl border border-line bg-panel-2 p-3">
+      <div className="mb-2 text-xs uppercase tracking-wide text-muted">Seuil de rentabilité du jour</div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="text-[11px] text-muted">CA à atteindre (pub + charges fixes)</div>
+          <div className={`text-2xl font-semibold ${reached ? "text-pos" : "text-warn"}`}>
+            {beRevAll !== null ? money(beRevAll, currency) : "—"}
+          </div>
+          <div className="text-[11px] text-muted">
+            {beRevAll === null
+              ? "marge négative"
+              : reached
+              ? `atteint ✅ (+${money(gap, currency)})`
+              : `manque ${money(gap, currency)}`}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] text-muted">CA pour couvrir la pub seule</div>
+          <div className="text-2xl font-semibold text-white">{beRevAds !== null ? money(beRevAds, currency) : "—"}</div>
+          <div className="text-[11px] text-muted">marge {pct(roas.marginRate)} · pub {money(roas.adSpend, currency)}</div>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <BeTile label="ROAS constaté" hint="CA ÷ pub" value={roas.actual} ok={okVs(roas.breakEven)} hasActual={roas.actual !== null} primary />
+        <BeTile label="BE produit + pub" hint="seuil à battre" value={roas.breakEven} ok={okVs(roas.breakEven)} hasActual={roas.actual !== null} />
+        <BeTile label="BE tout compris" hint="+ charges fixes" value={roas.breakEvenAllIn} ok={okVs(roas.breakEvenAllIn)} hasActual={roas.actual !== null} />
+      </div>
+    </div>
   );
 }
 
