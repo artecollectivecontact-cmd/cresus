@@ -182,7 +182,7 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
         <>
           {/* KPI de la période */}
           <div className="mb-5">
-            <KpiRow b={slice.bucket} currency={report.currency} usdPerEur={report.usdPerEur} />
+            <KpiRow b={slice.bucket} currency={report.currency} usdPerEur={report.usdPerEur} fixedCosts={slice.roas.fixedCosts} />
           </div>
         </>
       ) : (

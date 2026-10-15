@@ -94,22 +94,29 @@ export function CustomRange({
 
 // --- Cartes KPI --------------------------------------------------------------
 
-export function KpiRow({ b, currency, usdPerEur }: { b: PnLBucket; currency: string; usdPerEur: number }) {
-  const totalCost = b.cogs + b.fulfillment + b.shipping + b.ads + b.fees + b.expenses + b.refunds;
-  const margin = b.revenue > 0 ? b.net / b.revenue : 0;
+export function KpiRow({ b, currency, usdPerEur, fixedCosts = 0 }: { b: PnLBucket; currency: string; usdPerEur: number; fixedCosts?: number }) {
+  // Coûts et marge TOUT COMPRIS : on inclut les charges fixes (salaires,
+  // Urssaf…) pour que le verdict corresponde au seuil de rentabilité.
+  const totalCost = b.cogs + b.fulfillment + b.shipping + b.ads + b.fees + b.expenses + b.refunds + fixedCosts;
+  const net = round2(b.net - fixedCosts);
+  const margin = b.revenue > 0 ? net / b.revenue : 0;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       <Kpi label="Chiffre d'affaires" value={money(b.revenue, currency)} usdv={usd(b.revenue, usdPerEur)} sub={`${b.orders} commandes`} tone="neutral" />
-      <Kpi label="Coûts totaux" value={money(totalCost, currency)} usdv={usd(totalCost, usdPerEur)} sub="prod + port + pub + frais" tone="neutral" />
-      <Kpi label="Marge nette" value={money(b.net, currency)} usdv={usd(b.net, usdPerEur)} sub={pct(margin) + " de marge"} tone={b.net >= 0 ? "pos" : "neg"} />
+      <Kpi label="Coûts totaux" value={money(totalCost, currency)} usdv={usd(totalCost, usdPerEur)} sub={fixedCosts ? "prod + port + pub + frais + fixes" : "prod + port + pub + frais"} tone="neutral" />
+      <Kpi label="Marge nette" value={money(net, currency)} usdv={usd(net, usdPerEur)} sub={pct(margin) + (fixedCosts ? " (après charges fixes)" : " de marge")} tone={net >= 0 ? "pos" : "neg"} />
       <Kpi
         label="Verdict"
-        value={b.net >= 0 ? "Rentable ✅" : "Déficit ⚠️"}
-        sub={b.net >= 0 ? "dans le vert" : "dans le rouge"}
-        tone={b.net >= 0 ? "pos" : "neg"}
+        value={net >= 0 ? "Rentable ✅" : "Déficit ⚠️"}
+        sub={net >= 0 ? "dans le vert" : "dans le rouge"}
+        tone={net >= 0 ? "pos" : "neg"}
       />
     </div>
   );
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 function Kpi({ label, value, usdv, sub, tone }: { label: string; value: string; usdv?: string; sub: string; tone: "pos" | "neg" | "neutral" }) {
@@ -164,6 +171,8 @@ export function DailyChart({
         {days.map((d) => {
           const revH = (d.revenue / max) * 100;
           const active = d.key === selected;
+          // Net TOUT COMPRIS (après charges fixes) pour coller au verdict.
+          const net = round2(d.net - (d.roas?.fixedCosts ?? 0));
           return (
             <button
               key={d.key}
@@ -171,13 +180,13 @@ export function DailyChart({
               className="group relative flex-1 flex flex-col justify-end items-center h-full min-w-0"
             >
               {showNet && (
-                <div className={`mb-1 text-[10px] font-semibold leading-none ${signedClass(d.net)}`}>
-                  {d.net >= 0 ? "+" : ""}{compact(d.net, currency)}
+                <div className={`mb-1 text-[10px] font-semibold leading-none ${signedClass(net)}`}>
+                  {net >= 0 ? "+" : ""}{compact(net, currency)}
                 </div>
               )}
               <div
                 className={`w-full rounded-t transition-opacity ${
-                  d.net >= 0 ? "bg-accent/50" : "bg-neg/50"
+                  net >= 0 ? "bg-accent/50" : "bg-neg/50"
                 } ${active ? "ring-2 ring-white/70 opacity-100" : "group-hover:opacity-80"}`}
                 style={{ height: `${Math.max(revH, 1)}%` }}
               />
@@ -187,7 +196,7 @@ export function DailyChart({
               <div className="pointer-events-none absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap rounded bg-panel-2 border border-line px-2 py-1 text-[11px] z-10">
                 <div className="font-medium">{dayLabel(d.key)}</div>
                 <div>CA {money(d.revenue, currency)} <span className="text-muted">≈ {usd(d.revenue, usdPerEur)}</span></div>
-                <div className={signedClass(d.net)}>Net {money(d.net, currency)}</div>
+                <div className={signedClass(net)}>Net {money(net, currency)} <span className="text-muted">(tout compris)</span></div>
                 <div className="text-muted">{d.orders} cmd</div>
               </div>
             </button>
@@ -208,7 +217,7 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
     <Panel title={`Détail — ${dayLabel(bucket.key)}`} subtitle="KPI, seuil de rentabilité et postes par région pour ce jour">
       {/* KPI du jour (comme la période, mais pour le jour cliqué) */}
       <div className="mb-4">
-        <KpiRow b={bucket} currency={currency} usdPerEur={usdPerEur} />
+        <KpiRow b={bucket} currency={currency} usdPerEur={usdPerEur} fixedCosts={bucket.roas?.fixedCosts ?? 0} />
       </div>
 
       {/* Zone seuil de rentabilité (BE) — ce qu'il faut atteindre ce jour-là */}
