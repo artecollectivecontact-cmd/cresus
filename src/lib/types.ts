@@ -112,6 +112,8 @@ export interface RegionBreak {
   tva: number;
   /** Frais Shopify de la région (paiement + change + TVA sur frais). */
   fees: number;
+  /** Dépense publicitaire ciblée sur la région (Meta par pays). */
+  ads: number;
 }
 
 export type PeriodKey = "day" | "week" | "d14" | "d30";

@@ -652,13 +652,14 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string, overhead30 
     // Ventilation régionale (hors pub, qui n'a pas de pays).
     const v = e.amountBase;
     const r = regionOf(e.country);
-    const rb = slot.reg.get(r) || { region: r, revenue: 0, print: 0, frames: 0, shipping: 0, taxes: 0, tva: 0, fees: 0 };
+    const rb = slot.reg.get(r) || { region: r, revenue: 0, print: 0, frames: 0, shipping: 0, taxes: 0, tva: 0, fees: 0, ads: 0 };
     if (e.kind === "revenue") rb.revenue += v;
     else if (e.kind === "cogs") {
       // Artelo = cadres ; Printify/Prodigi = impression (prints).
       if (e.source === "artelo") rb.frames += -v;
       else rb.print += -v;
     } else if (e.kind === "fulfillment" || e.kind === "shipping") rb.shipping += -v;
+    else if (e.kind === "ads") rb.ads += -v;
     else if (e.kind === "tax_collected") {
       rb.taxes += v;
       rb.tva += v;
@@ -696,8 +697,9 @@ function buildDailyBuckets(dated: Dated[], n: number, today: string, overhead30 
           taxes: round2(r.taxes),
           tva: round2(r.tva),
           fees: round2(r.fees),
+          ads: round2(r.ads),
         }))
-        .filter((r) => r.revenue !== 0 || r.print !== 0 || r.frames !== 0 || r.shipping !== 0 || r.taxes !== 0)
+        .filter((r) => r.revenue !== 0 || r.print !== 0 || r.frames !== 0 || r.shipping !== 0 || r.taxes !== 0 || r.ads !== 0)
         .sort((a, b) => (order[a.region] ?? 9) - (order[b.region] ?? 9));
       return b;
     })

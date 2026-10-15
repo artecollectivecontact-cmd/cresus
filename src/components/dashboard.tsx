@@ -214,30 +214,38 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
       {/* Zone seuil de rentabilité (BE) — ce qu'il faut atteindre ce jour-là */}
       {roas && <DayBreakEven roas={roas} currency={currency} />}
 
-      {/* Postes par région */}
+      {/* Postes par région (CA, pub, ROAS, coûts, marge) */}
       {regions.length === 0 ? (
         <p className="mt-4 text-sm text-muted">Aucun mouvement par région ce jour-là.</p>
       ) : (
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm whitespace-nowrap">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-muted">
                 <th className="py-1 pr-3">Région</th>
                 <th className="py-1 px-2 text-right">CA</th>
+                <th className="py-1 px-2 text-right">Pub</th>
+                <th className="py-1 px-2 text-right">ROAS</th>
                 <th className="py-1 px-2 text-right">Impression</th>
                 <th className="py-1 px-2 text-right">Cadres</th>
                 <th className="py-1 px-2 text-right">Livraison</th>
                 <th className="py-1 px-2 text-right">Taxes</th>
-                <th className="py-1 pl-2 text-right">Total coûts</th>
+                <th className="py-1 pl-2 text-right">Marge</th>
               </tr>
             </thead>
             <tbody>
               {regions.map((r) => {
-                const totalCost = r.print + r.frames + r.shipping + r.taxes;
+                // Marge = CA − coûts réels (hors TVA collectée, qui est une dette).
+                const marge = r.revenue - r.print - r.frames - r.shipping - r.fees - r.ads;
+                const roas = r.ads > 0 ? r.revenue / r.ads : null;
                 return (
                   <tr key={r.region} className="border-t border-line">
                     <td className="py-2 pr-3 font-medium">{REGION_LABELS[r.region] ?? r.region}</td>
                     <td className="py-2 px-2 text-right">{money(r.revenue, currency)}</td>
+                    <td className="py-2 px-2 text-right text-neg">{r.ads ? `−${money(r.ads, currency)}` : "—"}</td>
+                    <td className={`py-2 px-2 text-right font-medium ${roas && roas >= 2 ? "text-pos" : roas ? "text-warn" : "text-muted"}`}>
+                      {roas ? `${roas.toLocaleString("fr-FR", { maximumFractionDigits: 2 })}×` : "—"}
+                    </td>
                     <td className="py-2 px-2 text-right text-neg">{r.print ? `−${money(r.print, currency)}` : "—"}</td>
                     <td className="py-2 px-2 text-right text-neg">{r.frames ? `−${money(r.frames, currency)}` : "—"}</td>
                     <td className="py-2 px-2 text-right text-neg">{r.shipping ? `−${money(r.shipping, currency)}` : "—"}</td>
@@ -249,7 +257,7 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
                         </div>
                       ) : null}
                     </td>
-                    <td className="py-2 pl-2 text-right font-medium text-neg">{totalCost ? `−${money(totalCost, currency)}` : "—"}</td>
+                    <td className={`py-2 pl-2 text-right font-semibold ${signedClass(marge)}`}>{money(marge, currency)}</td>
                   </tr>
                 );
               })}
@@ -273,59 +281,45 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
         </div>
       ) : null}
 
-      {/* Pub (Meta) : globale, pas de région */}
-      <div className="mt-3 flex items-center justify-between rounded-lg bg-panel-2 px-3 py-2 text-sm">
-        <span className="font-medium">Pub Meta (global)</span>
-        <span className="text-neg">{bucket.ads ? `−${money(bucket.ads, currency)} ` : "— "}
-          <span className="text-muted text-xs">≈ {usd(bucket.ads, usdPerEur)}</span>
-        </span>
-      </div>
-
-      <p className="mt-2 text-[11px] text-muted">
-        Taxes = TVA collectée + frais Shopify (détail sous le montant). Total coûts = impression + cadres + livraison + taxes.
-        Les coûts par région sont rattachés à la commande Shopify ; l&apos;impression manquante (Prodigi non facturé) est estimée.
+      <p className="mt-3 text-[11px] text-muted">
+        ROAS = CA ÷ pub de la région. Marge = CA − impression − cadres − livraison − frais − pub (la TVA collectée n&apos;est pas
+        une charge). Pub ventilée par pays via Meta. UK/EU : impression estimée (Prodigi ne facture pas par commande).
       </p>
     </Panel>
   );
 }
 
-/** Zone seuil de rentabilité d'un jour : CA à atteindre pour être rentable. */
+/** Zone seuil de rentabilité d'un jour, en langage clair. */
 function DayBreakEven({ roas, currency }: { roas: RoasStats; currency: string }) {
-  const okVs = (be: number | null) => roas.actual !== null && be !== null && roas.actual >= be;
-  // CA à atteindre pour couvrir pub + charges fixes (net des coûts produit).
   const m = roas.marginRate;
-  const beRevAds = m > 0 ? roas.adSpend / m : null;
-  const beRevAll = m > 0 ? (roas.adSpend + roas.fixedCosts) / m : null;
-  const reached = beRevAll !== null && roas.revenue >= beRevAll;
-  const gap = beRevAll !== null ? Math.abs(roas.revenue - beRevAll) : 0;
+  // CA à atteindre pour couvrir pub + charges fixes (le reste étant proportionnel).
+  const target = m > 0 ? (roas.adSpend + roas.fixedCosts) / m : null;
+  const reached = target !== null && roas.revenue >= target;
+  const gap = target !== null ? Math.abs(roas.revenue - target) : 0;
   return (
     <div className="rounded-xl border border-line bg-panel-2 p-3">
-      <div className="mb-2 text-xs uppercase tracking-wide text-muted">Seuil de rentabilité du jour</div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="text-[11px] text-muted">CA à atteindre (pub + charges fixes)</div>
-          <div className={`text-2xl font-semibold ${reached ? "text-pos" : "text-warn"}`}>
-            {beRevAll !== null ? money(beRevAll, currency) : "—"}
-          </div>
-          <div className="text-[11px] text-muted">
-            {beRevAll === null
-              ? "marge négative"
-              : reached
-              ? `atteint ✅ (+${money(gap, currency)})`
-              : `manque ${money(gap, currency)}`}
-          </div>
-        </div>
-        <div>
-          <div className="text-[11px] text-muted">CA pour couvrir la pub seule</div>
-          <div className="text-2xl font-semibold text-white">{beRevAds !== null ? money(beRevAds, currency) : "—"}</div>
-          <div className="text-[11px] text-muted">marge {pct(roas.marginRate)} · pub {money(roas.adSpend, currency)}</div>
-        </div>
-      </div>
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        <BeTile label="ROAS constaté" hint="CA ÷ pub" value={roas.actual} ok={okVs(roas.breakEven)} hasActual={roas.actual !== null} primary />
-        <BeTile label="BE produit + pub" hint="seuil à battre" value={roas.breakEven} ok={okVs(roas.breakEven)} hasActual={roas.actual !== null} />
-        <BeTile label="BE tout compris" hint="+ charges fixes" value={roas.breakEvenAllIn} ok={okVs(roas.breakEvenAllIn)} hasActual={roas.actual !== null} />
-      </div>
+      <div className="mb-1 text-xs uppercase tracking-wide text-muted">Seuil de rentabilité du jour</div>
+      {target === null ? (
+        <p className="text-sm text-neg">Marge produit négative : impossible d&apos;être rentable en l&apos;état.</p>
+      ) : (
+        <>
+          <p className="text-sm">
+            Pour être rentable (couvrir la pub <strong>{money(roas.adSpend, currency)}</strong> + les charges fixes
+            <strong> {money(roas.fixedCosts, currency)}</strong>), il faut faire{" "}
+            <strong className="text-white">{money(target, currency)}</strong> de CA.
+          </p>
+          <p className={`mt-1 text-sm font-semibold ${reached ? "text-pos" : "text-warn"}`}>
+            {reached ? (
+              <>Tu es à {money(roas.revenue, currency)} → rentable ✅ (+{money(gap, currency)})</>
+            ) : (
+              <>Tu es à {money(roas.revenue, currency)} → il manque {money(gap, currency)} de CA</>
+            )}
+          </p>
+          <p className="mt-1 text-[11px] text-muted">
+            Avec une marge produit de {pct(m)}, chaque euro de CA dégage {money(m, currency)} pour payer pub et frais fixes.
+          </p>
+        </>
+      )}
     </div>
   );
 }
