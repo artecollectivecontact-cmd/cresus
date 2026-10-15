@@ -264,6 +264,8 @@ function round2(n: number): number {
 // --- Cache des données (partie lourde : appels API) --------------------------
 
 const DATA_TTL_MS = Number(process.env.DATA_TTL_MS ?? 180_000); // 3 min
+// Diagnostic du plancher d'estimation (exposé via /api/debug).
+let estimateDiag: Record<string, number> = {};
 let dataCache: {
   at: number;
   normalized: NormalizedEntry[];
@@ -391,9 +393,19 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
   //    prorata du CA produit, le jour de la vente, dans la région de la commande.
   if (COST_BASIS === "connectors") {
     let estimatedCount = 0;
+    let nTotal = 0;
+    let nZero = 0;
+    let nCovered = 0;
     for (const [id, o] of orders) {
-      if (o.productBase <= 0) continue;
-      if (o.keys.some((k) => coveredKeys.has(k))) continue; // déjà couvert par un coût réel
+      nTotal++;
+      if (o.productBase <= 0) {
+        nZero++;
+        continue;
+      }
+      if (o.keys.some((k) => coveredKeys.has(k))) {
+        nCovered++;
+        continue; // déjà couvert par un coût réel
+      }
       const region = regionOf(o.country);
       // US = Printify (prints) ; UK/EU = Prodigi ; défaut Printify.
       const src: SourceId = region === "UK" || region === "EU" ? "prodigi" : "printify";
@@ -421,6 +433,7 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
       const ps = statuses.find((s) => s.id === "prodigi");
       if (ps) ps.detail += ` · +${estimatedCount} cmd estimées (coût réel non facturé)`;
     }
+    estimateDiag = { orders: nTotal, zeroBase: nZero, covered: nCovered, estimated: estimatedCount, coveredKeys: coveredKeys.size };
   }
 
   dataCache = { at: Date.now(), normalized, statuses, demo };
@@ -832,6 +845,7 @@ export async function debugSample() {
     rebateCount,
     estimatedCount,
     ordersByRegion,
+    estimateDiag,
   };
 }
 
