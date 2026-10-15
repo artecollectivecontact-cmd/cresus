@@ -53,18 +53,25 @@ export const prodigiConnector: Connector = {
 
     let anyOk = false; // au moins un appel a répondu (sinon => erreur, pas "0")
 
-    // Un lot filtré par date (createdFrom/createdTo), avec timeout individuel.
-    const fetchBatch = async (skip: number): Promise<ProdigiOrder[]> => {
+    // Prodigi attend un ISO 8601 sans millisecondes (ex: 2026-09-16T00:00:00Z).
+    const isoNoMs = (s: string) => s.replace(/\.\d{3}(Z|[+-]\d{2}:?\d{2})$/, "$1");
+    const fromIso = isoNoMs(range.from);
+    const toIso = isoNoMs(range.to);
+    const fromMs = new Date(range.from).getTime();
+    const toMs = new Date(range.to).getTime();
+
+    // Un lot. `withDates` : filtre serveur par date ; sinon on prend les plus
+    // récentes et on filtre côté client (repli si le filtre date renvoie vide).
+    const fetchBatch = async (skip: number, withDates: boolean): Promise<ProdigiOrder[]> => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 9000);
       try {
-        const params = new URLSearchParams({
-          top: String(TOP),
-          skip: String(skip),
-          createdFrom: range.from,
-          createdTo: range.to,
-        });
-        const res = await fetch(`${BASE}/orders?${params.toString()}`, {
+        const p = new URLSearchParams({ top: String(TOP), skip: String(skip) });
+        if (withDates) {
+          p.set("createdFrom", fromIso);
+          p.set("createdTo", toIso);
+        }
+        const res = await fetch(`${BASE}/orders?${p.toString()}`, {
           headers: { "X-API-Key": key },
           cache: "no-store",
           signal: ctrl.signal,
@@ -81,10 +88,22 @@ export const prodigiConnector: Connector = {
     };
 
     try {
-      // Filtrage par date côté serveur + lots EN PARALLÈLE (au lieu d'une boucle
-      // en série qui dépassait le délai sur 30 jours de commandes).
+      // Lots EN PARALLÈLE (au lieu d'une boucle en série qui dépassait le délai).
       const skips = Array.from({ length: BATCHES }, (_, i) => i * TOP);
-      const batches = await Promise.all(skips.map(fetchBatch));
+      let batches = await Promise.all(skips.map((s) => fetchBatch(s, true)));
+      let total = batches.reduce((n, b) => n + b.length, 0);
+      // Repli : si le filtre date ne renvoie rien, on refait sans filtre et on
+      // garde côté client les commandes de la fenêtre.
+      if (total === 0 && anyOk) {
+        batches = await Promise.all(skips.map((s) => fetchBatch(s, false)));
+        batches = batches.map((b) =>
+          b.filter((o) => {
+            const t = new Date(o.created).getTime();
+            return !isNaN(t) && t >= fromMs && t < toMs;
+          })
+        );
+        total = batches.reduce((n, b) => n + b.length, 0);
+      }
       if (!anyOk) return { entries: [], state: "error", detail: "Prodigi injoignable (tous les appels ont échoué)" };
       const entries: LedgerEntry[] = [];
       let orderCount = 0; // commandes renvoyées par l'API

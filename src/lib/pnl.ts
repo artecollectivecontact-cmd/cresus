@@ -806,6 +806,22 @@ export async function debugSample() {
     }));
 
   const rebateCount = normalized.filter((e) => e.source === "printify" && e.meta?.rebate).length;
+  const estimatedCount = normalized.filter((e) => e.meta?.estimated).length;
+
+  // Commandes Shopify par région (unique) — pour savoir si UK/EU existe vraiment.
+  const seen = new Set<string>();
+  const ordersByRegion: Record<string, { commandes: number; ca: number }> = {};
+  for (const e of normalized) {
+    if (e.source !== "shopify" || e.kind !== "revenue" || !e.id.endsWith(":revenue")) continue;
+    const idk = (typeof e.meta?.legacyId === "string" ? e.meta.legacyId : e.ref) || e.id;
+    if (seen.has(idk)) continue;
+    seen.add(idk);
+    const r = regionOf(e.country);
+    const slot = ordersByRegion[r] || { commandes: 0, ca: 0 };
+    slot.commandes++;
+    slot.ca += Math.round(e.amountBase);
+    ordersByRegion[r] = slot;
+  }
 
   return {
     sources: statuses.map((s) => ({ id: s.id, state: s.state, entries: s.entryCount, detail: s.detail })),
@@ -814,6 +830,8 @@ export async function debugSample() {
     qontoTop,
     dailyPrint,
     rebateCount,
+    estimatedCount,
+    ordersByRegion,
   };
 }
 

@@ -422,19 +422,17 @@ export function RoasPanel({ roas, currency, periodLabel }: { roas: RoasStats; cu
         <div className="mt-1 text-xs text-muted">CA total ÷ dépense pub</div>
       </div>
 
-      {/* Les 3 seuils d'équilibre */}
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        <BeTile label="BE impression" hint="couvre la production seule" value={roas.breakEvenPrint} ok={okVs(roas.breakEvenPrint)} hasActual={roas.actual !== null} />
-        <BeTile label="BE produit" hint="+ livraison, frais, change" value={roas.breakEven} ok={okVs(roas.breakEven)} hasActual={roas.actual !== null} primary />
-        <BeTile label="BE tout compris" hint="+ charges fixes" value={roas.breakEvenAllIn} ok={okVs(roas.breakEvenAllIn)} hasActual={roas.actual !== null} />
+      {/* Les 2 seuils d'équilibre demandés */}
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <BeTile label="BE produit + pub" hint="prod + livraison + frais + change" value={roas.breakEven} ok={okVs(roas.breakEven)} hasActual={roas.actual !== null} primary />
+        <BeTile label="BE tout compris" hint="+ charges fixes (salaires, Urssaf…)" value={roas.breakEvenAllIn} ok={okVs(roas.breakEvenAllIn)} hasActual={roas.actual !== null} />
       </div>
 
       <div className={`mt-3 text-sm ${verdict.tone}`}>{verdict.txt}</div>
 
       <div className="mt-3 space-y-1 rounded-lg bg-panel-2 px-3 py-2 text-sm text-muted">
         <div className="flex justify-between"><span>CA (base marge)</span><span className="text-white">{money(roas.revenue, currency)}</span></div>
-        <div className="flex justify-between"><span>Coût impression/production</span><span className="text-neg">−{money(roas.printCosts, currency)}</span></div>
-        <div className="flex justify-between"><span>Coûts variables (total hors pub)</span><span className="text-neg">−{money(roas.variableCosts, currency)}</span></div>
+        <div className="flex justify-between"><span>Coûts variables (prod + livraison + frais + change)</span><span className="text-neg">−{money(roas.variableCosts, currency)}</span></div>
         <div className="flex justify-between"><span>Charges fixes (réparties)</span><span className="text-neg">{roas.fixedCosts ? `−${money(roas.fixedCosts, currency)}` : "—"}</span></div>
         <div className="flex justify-between border-t border-line pt-1">
           <span>Marge de contribution avant pub</span>
@@ -444,9 +442,9 @@ export function RoasPanel({ roas, currency, periodLabel }: { roas: RoasStats; cu
       </div>
 
       <p className="mt-2 text-[11px] text-muted">
-        3 seuils cumulatifs : <strong>impression</strong> (production seule) → <strong>produit</strong> (tous coûts variables, le seuil que ton
-        ROAS doit battre) → <strong>tout compris</strong> (+ salaires, Urssaf, abonnements, estimés depuis Qonto). ROAS constaté = « blended »,
-        faute d&apos;attribution par campagne.
+        <strong>BE produit + pub</strong> = seuil à battre pour que la pub soit rentable (tous coûts variables).
+        <strong> BE tout compris</strong> = + charges fixes (salaires, Urssaf, abonnements, estimés depuis Qonto).
+        ROAS constaté = « blended » (toutes ventes ÷ pub), faute d&apos;attribution par campagne.
       </p>
     </Panel>
   );

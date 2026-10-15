@@ -19,11 +19,18 @@ const BASE = "https://api.printify.com/v1";
 // l'API SUR-estime le coût. On déduit l'économie réelle par taille (prix
 // courant - prix custom), appliquée par article depuis REBATE_START.
 const REBATE_START = Date.parse("2026-09-01T00:00:00Z");
-const POSTER_REBATE: { re: RegExp; save: number }[] = [
-  { re: /12\s*[x×]\s*18/i, save: 5.74 - 3.48 }, // 2.26
-  { re: /20\s*[x×]\s*30/i, save: 5.26 - 4.35 }, // 0.91
-  { re: /24\s*[x×]\s*36/i, save: 7.07 - 3.83 }, // 3.24
+const POSTER_REBATE: { size: string; save: number }[] = [
+  { size: "12x18", save: 5.74 - 3.48 }, // 2.26
+  { size: "20x30", save: 5.26 - 4.35 }, // 0.91
+  { size: "24x36", save: 7.07 - 3.83 }, // 3.24
 ];
+
+// Normalise un libellé de variante pour détecter la taille : minuscule, retire
+// pouces/guillemets/espaces, unifie le séparateur (× -> x).
+// "Matte / 12″ x 18″ (Vertical)" -> "matte/12x18(vertical)".
+function normSize(s: string): string {
+  return s.toLowerCase().replace(/[″"”'′\s]/g, "").replace(/×/g, "x");
+}
 
 interface PrintifyLineItem {
   quantity?: number;
@@ -90,9 +97,10 @@ export const printifyConnector: Connector = {
         if (ts >= REBATE_START && o.line_items?.length) {
           for (const li of o.line_items) {
             const qty = li.quantity ?? 1;
-            const txt = `${li.metadata?.variant_label ?? ""} ${li.metadata?.title ?? ""} ${li.metadata?.sku ?? ""}`;
-            if (labelSamples.length < 8 && txt.trim()) labelSamples.push(txt.trim().slice(0, 60));
-            const hit = POSTER_REBATE.find((r) => r.re.test(txt));
+            const raw = `${li.metadata?.variant_label ?? ""} ${li.metadata?.title ?? ""}`.trim();
+            if (labelSamples.length < 8 && raw) labelSamples.push(raw.slice(0, 50));
+            const txt = normSize(`${raw} ${li.metadata?.sku ?? ""}`);
+            const hit = POSTER_REBATE.find((r) => txt.includes(r.size));
             if (hit) rebateSaved += hit.save * qty;
           }
           if (rebateSaved > 0) {
