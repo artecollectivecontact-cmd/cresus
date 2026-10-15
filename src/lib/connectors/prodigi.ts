@@ -87,11 +87,15 @@ export const prodigiConnector: Connector = {
       const batches = await Promise.all(skips.map(fetchBatch));
       if (!anyOk) return { entries: [], state: "error", detail: "Prodigi injoignable (tous les appels ont échoué)" };
       const entries: LedgerEntry[] = [];
+      let orderCount = 0; // commandes renvoyées par l'API
+      let billedCount = 0; // commandes avec au moins une charge (donc facturées)
       for (const batch of batches) {
         for (const o of batch) {
+          orderCount++;
           const ts = new Date(o.created).getTime();
           const iso = isNaN(ts) ? new Date().toISOString() : new Date(ts).toISOString();
           const { print, ship, currency } = splitCharges(o);
+          if (print !== 0 || ship !== 0) billedCount++;
           const country = o.recipient?.address?.countryCode; // pays de destination (UK/EU/…)
           const ref = o.merchantReference;
           const label = `Prodigi${ref ? ` (${ref})` : ""}`;
@@ -123,7 +127,15 @@ export const prodigiConnector: Connector = {
           }
         }
       }
-      return { entries, state: "live", detail: `${entries.length} écritures` };
+      // Diagnostic : distingue "0 commande renvoyée" de "commandes non facturées"
+      // (charges vides = facturation mensuelle Prodigi en attente).
+      const detail =
+        entries.length > 0
+          ? `${entries.length} écritures (${billedCount}/${orderCount} commandes facturées)`
+          : orderCount > 0
+          ? `0 écriture — ${orderCount} commandes mais charges vides (facturation Prodigi en attente)`
+          : "0 écriture — aucune commande renvoyée sur la fenêtre (filtre date/endpoint ?)";
+      return { entries, state: "live", detail };
     } catch (e) {
       return { entries: [], state: "error", detail: (e as Error).message };
     }
