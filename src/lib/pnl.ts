@@ -18,7 +18,7 @@ import type {
 } from "./types";
 import { connectors } from "./connectors";
 import type { DateRange } from "./connectors/types";
-import { getConverter } from "./fx";
+import { getConverter, getDailyConverter } from "./fx";
 import { projectTax } from "./tax";
 import {
   BASE_CURRENCY,
@@ -328,10 +328,11 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
   // 3bis) Politique de coût (anti double comptage).
   applyCostBasis(raw);
 
-  // 4) Conversion en devise de reporting.
-  const fx = await getConverter();
+  // 4) Conversion en devise de reporting, au taux du JOUR de chaque écriture
+  //    (plus précis : reflète le change réel du jour où la dépense a eu lieu).
+  const dfx = await getDailyConverter(range.from.slice(0, 10), range.to.slice(0, 10));
   const normalized: NormalizedEntry[] = raw.map((e) => {
-    const rate = fx.rate(e.currency);
+    const rate = dfx.rateOn(e.currency, localParts(e.occurredAt).day);
     return { ...e, amountBase: e.amount * rate, baseCurrency: BASE_CURRENCY, fxRate: rate };
   });
 

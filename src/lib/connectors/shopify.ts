@@ -195,7 +195,10 @@ export const shopifyConnector: Connector = {
               ref: o.name,
             });
           }
-          if (shipping > 0) {
+          // Port facturé au client : EXCLU du CA par défaut pour s'aligner sur
+          // Hubble (« Ventes » = produits HT, hors port). Réactivable via
+          // COUNT_SHIPPING_REVENUE=1.
+          if (shipping > 0 && process.env.COUNT_SHIPPING_REVENUE === "1") {
             entries.push({
               id: `shopify:order:${o.id}:shipping-in`,
               source: "shopify",

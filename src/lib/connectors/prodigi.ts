@@ -1,15 +1,70 @@
 import type { Connector, DateRange, FetchResult } from "./types";
 import type { LedgerEntry } from "../types";
 import { hasEnv } from "../config";
+import prodigiCsv from "../data/prodigi-orders.json";
 
 // ---------------------------------------------------------------------------
 // Connecteur Prodigi — coût de production POD + expédition.
 // API REST : https://www.prodigi.com/print-api/docs/reference/  (header X-API-Key).
 // Montants Prodigi exprimés en unités monétaires (pas en centimes) + devise.
+//
+// L'API /orders de ce compte ne liste rien (orders vides), donc on se replie
+// sur un export CSV Prodigi importé (src/lib/data/prodigi-orders.json) :
+// coûts RÉELS par commande (Order Reference = ID Shopify), en EUR. À rafraîchir
+// en réexportant depuis Prodigi.
 // ---------------------------------------------------------------------------
 
 const ENV = ["PRODIGI_API_KEY"];
 const BASE = process.env.PRODIGI_BASE || "https://api.prodigi.com/v4.0";
+
+interface ProdigiCsvRow {
+  ref: string;
+  date: string;
+  cogs: number;
+  shipping: number;
+  currency: string;
+  country: string;
+}
+
+/** Écritures issues de l'export CSV, filtrées sur la fenêtre. */
+function fromCsv(range: DateRange): LedgerEntry[] {
+  const fromMs = new Date(range.from).getTime();
+  const toMs = new Date(range.to).getTime();
+  const entries: LedgerEntry[] = [];
+  for (const o of prodigiCsv as ProdigiCsvRow[]) {
+    const iso = /[zZ]|[+-]\d{2}:?\d{2}$/.test(o.date) ? o.date : `${o.date}Z`;
+    const t = new Date(iso).getTime();
+    if (isNaN(t) || t < fromMs || t >= toMs) continue;
+    const ccy = o.currency || "EUR";
+    if (o.cogs > 0) {
+      entries.push({
+        id: `prodigi:csv:${o.ref}:cogs`,
+        source: "prodigi",
+        kind: "cogs",
+        occurredAt: iso,
+        amount: -o.cogs,
+        currency: ccy,
+        label: `Prod. Prodigi (${o.ref})`,
+        country: o.country,
+        ref: o.ref,
+      });
+    }
+    if (o.shipping > 0) {
+      entries.push({
+        id: `prodigi:csv:${o.ref}:ship`,
+        source: "prodigi",
+        kind: "fulfillment",
+        occurredAt: iso,
+        amount: -o.shipping,
+        currency: ccy,
+        label: `Livraison Prodigi (${o.ref})`,
+        country: o.country,
+        ref: o.ref,
+      });
+    }
+  }
+  return entries;
+}
 
 interface ProdigiOrder {
   id: string;
@@ -41,11 +96,16 @@ function splitCharges(o: ProdigiOrder): { print: number; ship: number; currency:
 export const prodigiConnector: Connector = {
   id: "prodigi",
   label: "Prodigi",
-  isConfigured: () => hasEnv(ENV),
+  // Configuré si clé API OU données CSV disponibles.
+  isConfigured: () => hasEnv(ENV) || (prodigiCsv as unknown[]).length > 0,
 
   async fetch(range: DateRange): Promise<FetchResult> {
     if (!hasEnv(ENV)) {
-      return { entries: [], state: "stub", detail: "clé absente (PRODIGI_API_KEY)" };
+      // Pas de clé API : on sert directement les coûts réels du CSV.
+      const csv = fromCsv(range);
+      return csv.length > 0
+        ? { entries: csv, state: "live", detail: `${csv.length} écritures (import CSV — pas de clé API)` }
+        : { entries: [], state: "stub", detail: "clé absente et aucune donnée CSV" };
     }
     const key = process.env.PRODIGI_API_KEY!;
     const TOP = 100;
@@ -130,17 +190,33 @@ export const prodigiConnector: Connector = {
           }
         }
       }
-      // Diagnostic : distingue "0 commande renvoyée" de "commandes non facturées"
-      // (charges vides = facturation mensuelle Prodigi en attente).
-      const detail =
-        entries.length > 0
-          ? `${entries.length} écritures (${billedCount}/${orderCount} commandes facturées)`
-          : orderCount > 0
-          ? `0 écriture — ${orderCount} commandes mais charges vides (facturation Prodigi en attente)`
-          : "0 écriture — aucune commande renvoyée sur la fenêtre (filtre date/endpoint ?)";
-      return { entries, state: "live", detail };
-    } catch (e) {
-      return { entries: [], state: "error", detail: (e as Error).message };
+      // L'API ne liste rien pour ce compte -> on se replie sur l'export CSV
+      // (coûts réels par commande). On ne mélange pas : API si elle renvoie des
+      // écritures, sinon CSV.
+      if (entries.length > 0) {
+        return {
+          entries,
+          state: "live",
+          detail: `${entries.length} écritures API (${billedCount}/${orderCount} facturées)`,
+        };
+      }
+      const csv = fromCsv(range);
+      if (csv.length > 0) {
+        return { entries: csv, state: "live", detail: `${csv.length} écritures (import CSV — API vide)` };
+      }
+      return {
+        entries: [],
+        state: "live",
+        detail:
+          orderCount > 0
+            ? `0 écriture — ${orderCount} commandes mais charges vides`
+            : "0 écriture — API vide et aucune donnée CSV sur la fenêtre",
+      };
+    } catch {
+      // En cas d'échec API, on sert quand même les coûts réels du CSV.
+      const csv = fromCsv(range);
+      if (csv.length > 0) return { entries: csv, state: "live", detail: `${csv.length} écritures (import CSV)` };
+      return { entries: [], state: "error", detail: "Prodigi API injoignable et CSV vide sur la fenêtre" };
     }
   },
 };
