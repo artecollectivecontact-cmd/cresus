@@ -388,9 +388,28 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
     for (const k of keysOf(e)) coveredKeys.add(k);
   }
 
-  // b) Coût estimé plancher : commandes Shopify SANS coût POD rattaché (Prodigi
-  //    non encore facturé, réf non matchée). Impression + expédition estimées au
-  //    prorata du CA produit, le jour de la vente, dans la région de la commande.
+  // Couverture réelle par région : CA Shopify vs coût POD réel déjà remonté.
+  // On n'estime QUE les régions sous-couvertes (UK/EU où Prodigi ne remonte
+  // rien) — jamais une région déjà couverte par du réel (US via Printify/Artelo,
+  // y compris les coûts sans référence), pour éviter le double comptage.
+  const regionRevenue: Record<string, number> = {};
+  const regionRealCogs: Record<string, number> = {};
+  for (const e of normalized) {
+    if (e.reconcileOnly) continue;
+    const r = regionOf(e.country);
+    if (e.source === "shopify" && e.kind === "revenue" && e.id.endsWith(":revenue")) {
+      regionRevenue[r] = (regionRevenue[r] ?? 0) + e.amountBase;
+    } else if (e.kind === "cogs" && !e.meta?.estimated && POD.has(e.source)) {
+      regionRealCogs[r] = (regionRealCogs[r] ?? 0) + -e.amountBase;
+    }
+  }
+  // Région sous-couverte : coût réel < moitié du coût attendu (CA × taux).
+  const regionUnderCovered = (r: string): boolean =>
+    (regionRealCogs[r] ?? 0) < (regionRevenue[r] ?? 0) * ESTIMATED_COGS_RATE * 0.5;
+
+  // b) Coût estimé plancher : commandes Shopify SANS coût POD rattaché, UNIQUEMENT
+  //    dans les régions sous-couvertes (Prodigi UK/EU muet). Impression +
+  //    expédition estimées, le jour de la vente, dans la région de la commande.
   if (COST_BASIS === "connectors") {
     let estimatedCount = 0;
     let nTotal = 0;
@@ -402,11 +421,11 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
         nZero++;
         continue;
       }
-      if (o.keys.some((k) => coveredKeys.has(k))) {
-        nCovered++;
-        continue; // déjà couvert par un coût réel
-      }
       const region = regionOf(o.country);
+      if (o.keys.some((k) => coveredKeys.has(k)) || !regionUnderCovered(region)) {
+        nCovered++;
+        continue; // couvert par un coût réel, ou région déjà couverte globalement
+      }
       // US = Printify (prints) ; UK/EU = Prodigi ; défaut Printify.
       const src: SourceId = region === "UK" || region === "EU" ? "prodigi" : "printify";
       const cogs = round2(o.productBase * ESTIMATED_COGS_RATE);
@@ -433,7 +452,7 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
       const ps = statuses.find((s) => s.id === "prodigi");
       if (ps) ps.detail += ` · +${estimatedCount} cmd estimées (coût réel non facturé)`;
     }
-    estimateDiag = { orders: nTotal, zeroBase: nZero, covered: nCovered, estimated: estimatedCount, coveredKeys: coveredKeys.size };
+    estimateDiag = { orders: nTotal, zeroBase: nZero, covered: nCovered, estimated: estimatedCount, coveredKeys: coveredKeys.size, cogsRate: ESTIMATED_COGS_RATE, fulRate: ESTIMATED_FULFILLMENT_RATE };
   }
 
   dataCache = { at: Date.now(), normalized, statuses, demo };

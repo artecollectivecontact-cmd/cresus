@@ -49,9 +49,15 @@ export const COST_BASIS = (process.env.COST_BASIS as "connectors" | "pennylane")
  * (Qonto : Prodigi + Printify + Artelo ≈ 21 k€) ÷ CA net produit (≈ 88 k$) ≈ 26 %,
  * réparti ~19 % impression + ~7 % livraison d'après les ratios Printify/Artelo.
  * Ajustables via ESTIMATED_COGS_RATE / ESTIMATED_FULFILLMENT_RATE dans Vercel.
+ * Robustesse : une variable d'env vide ou invalide (Number("")=0) ne doit PAS
+ * annuler l'estimation — on retombe sur le défaut.
  */
-export const ESTIMATED_COGS_RATE = Number(process.env.ESTIMATED_COGS_RATE ?? 0.19);
-export const ESTIMATED_FULFILLMENT_RATE = Number(process.env.ESTIMATED_FULFILLMENT_RATE ?? 0.07);
+function posRate(envVal: string | undefined, def: number): number {
+  const n = Number(envVal);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+export const ESTIMATED_COGS_RATE = posRate(process.env.ESTIMATED_COGS_RATE, 0.19);
+export const ESTIMATED_FULFILLMENT_RATE = posRate(process.env.ESTIMATED_FULFILLMENT_RATE, 0.07);
 
 /** Frais de transaction Shopify Basic + passerelle (approx.), ratio du CA TTC. */
 export const PAYMENT_FEE_RATE = Number(process.env.PAYMENT_FEE_RATE ?? 0.029);
