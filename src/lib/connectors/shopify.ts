@@ -83,9 +83,11 @@ interface GqlOrder {
   name: string;
   legacyResourceId: string;
   createdAt: string;
+  subtotalPriceSet: { shopMoney: Money };
   currentSubtotalPriceSet: { shopMoney: Money };
   currentTotalTaxSet: { shopMoney: Money };
   totalShippingPriceSet: { shopMoney: Money };
+  totalRefundedSet: { shopMoney: Money };
   shippingAddress: { countryCodeV2: string | null } | null;
   transactions: { fees: TxFee[] }[];
 }
@@ -115,9 +117,11 @@ const ORDERS_QUERY = `
         name
         createdAt
         legacyResourceId
+        subtotalPriceSet { shopMoney { amount currencyCode } }
         currentSubtotalPriceSet { shopMoney { amount currencyCode } }
         currentTotalTaxSet { shopMoney { amount currencyCode } }
         totalShippingPriceSet { shopMoney { amount currencyCode } }
+        totalRefundedSet { shopMoney { amount currencyCode } }
         shippingAddress { countryCodeV2 }
         transactions(first: 10) {
           fees {
@@ -166,9 +170,11 @@ export const shopifyConnector: Connector = {
         for (const o of data.orders.nodes) {
           const ccy = o.currentSubtotalPriceSet.shopMoney.currencyCode;
           const country = o.shippingAddress?.countryCodeV2 ?? undefined;
-          const subtotal = Number(o.currentSubtotalPriceSet.shopMoney.amount);
+          const subtotal = Number(o.currentSubtotalPriceSet.shopMoney.amount); // nette des retours
+          const origSubtotal = Number(o.subtotalPriceSet?.shopMoney.amount ?? subtotal); // avant retours
           const tax = Number(o.currentTotalTaxSet.shopMoney.amount);
           const shipping = Number(o.totalShippingPriceSet.shopMoney.amount);
+          const refunded = Number(o.totalRefundedSet?.shopMoney.amount ?? 0);
 
           entries.push({
             id: `shopify:order:${o.id}:revenue`,
@@ -182,6 +188,26 @@ export const shopifyConnector: Connector = {
             ref: o.name,
             meta: { legacyId: o.legacyResourceId },
           });
+
+          // Remboursements : le CA (currentSubtotal) retire déjà les RETOURS
+          // (articles renvoyés = origSubtotal - subtotal). On ne capte ici que
+          // la part remboursée EN PLUS (gestes commerciaux, remboursements
+          // partiels) pour ne pas compter deux fois.
+          const returnedProduct = Math.max(0, origSubtotal - subtotal);
+          const extraRefund = Math.round((refunded - returnedProduct) * 100) / 100;
+          if (extraRefund > 0) {
+            entries.push({
+              id: `shopify:order:${o.id}:refund`,
+              source: "shopify",
+              kind: "refund",
+              occurredAt: o.createdAt,
+              amount: -extraRefund,
+              currency: ccy,
+              label: `Remboursement ${o.name}`,
+              country,
+              ref: o.name,
+            });
+          }
           if (tax > 0) {
             entries.push({
               id: `shopify:order:${o.id}:tax`,
