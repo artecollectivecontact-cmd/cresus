@@ -333,30 +333,93 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
     return { ...e, amountBase: e.amount * rate, baseCurrency: BASE_CURRENCY, fxRate: rate };
   });
 
-  // 5) Rattachement de la région des coûts POD qui n'ont pas de pays natif :
-  //    on le déduit de la commande Shopify correspondante. Le matching essaie
-  //    plusieurs clés (référence normalisée, chiffres seuls, ID legacy Shopify)
-  //    car chaque fournisseur nomme la référence différemment.
-  const countryByRef = new Map<string, string>();
-  const addKey = (k: string | undefined, country: string) => {
-    if (k) countryByRef.set(k, country);
-  };
-  for (const e of normalized) {
-    if (e.kind === "revenue" && e.country) {
-      if (e.ref) {
-        addKey(normRef(e.ref), e.country);
-        addKey(digitsOnly(e.ref), e.country);
-      }
-      const legacy = e.meta?.legacyId;
-      if (typeof legacy === "string") addKey(legacy, e.country);
+  // 5) Rattachement commande Shopify <-> coûts POD. Chaque fournisseur nomme la
+  //    référence autrement : on indexe plusieurs clés (réf normalisée, chiffres
+  //    seuls, ID legacy Shopify) pour relier coûts et ventes.
+  interface OrderInfo { at: string; country?: string; productBase: number; keys: string[] }
+  const keysOf = (e: NormalizedEntry): string[] => {
+    const ks: string[] = [];
+    if (e.ref) {
+      ks.push(normRef(e.ref));
+      const d = digitsOnly(e.ref);
+      if (d) ks.push(d);
     }
-  }
-  const lookup = (ref: string): string | undefined =>
-    countryByRef.get(normRef(ref)) || countryByRef.get(digitsOnly(ref));
+    const legacy = e.meta?.legacyId;
+    if (typeof legacy === "string") ks.push(legacy);
+    return ks;
+  };
+
+  const orders = new Map<string, OrderInfo>();
   for (const e of normalized) {
-    if (!e.country && e.ref && (e.kind === "cogs" || e.kind === "fulfillment" || e.kind === "shipping")) {
-      const c = lookup(e.ref);
-      if (c) e.country = c;
+    if (e.source !== "shopify" || e.kind !== "revenue") continue;
+    const legacy = typeof e.meta?.legacyId === "string" ? (e.meta!.legacyId as string) : undefined;
+    const id = legacy || (e.ref ? normRef(e.ref) : e.id);
+    const info = orders.get(id) || { at: e.occurredAt, country: e.country, productBase: 0, keys: [] };
+    if (e.country && !info.country) info.country = e.country;
+    // base d'estimation = sous-total produit (exclut le port facturé).
+    if (e.id.endsWith(":revenue")) info.productBase += e.amountBase;
+    for (const k of keysOf(e)) if (!info.keys.includes(k)) info.keys.push(k);
+    orders.set(id, info);
+  }
+  const orderByKey = new Map<string, OrderInfo>();
+  for (const info of orders.values()) for (const k of info.keys) orderByKey.set(k, info);
+  const findOrder = (e: NormalizedEntry): OrderInfo | undefined => {
+    for (const k of keysOf(e)) {
+      const o = orderByKey.get(k);
+      if (o) return o;
+    }
+    return undefined;
+  };
+
+  // a) Coûts POD réels : recale la DATE sur la vente Shopify (Printify/Prodigi
+  //    datent au jour de production, d'où des colonnes vides) + complète le pays.
+  const POD = new Set<SourceId>(["printify", "prodigi", "artelo"]);
+  const coveredKeys = new Set<string>();
+  for (const e of normalized) {
+    const isPodCost = POD.has(e.source) && (e.kind === "cogs" || e.kind === "fulfillment" || e.kind === "shipping");
+    if (!isPodCost) continue;
+    const o = findOrder(e);
+    if (o) {
+      e.occurredAt = o.at; // le coût compte le jour de la vente
+      if (!e.country && o.country) e.country = o.country;
+    }
+    for (const k of keysOf(e)) coveredKeys.add(k);
+  }
+
+  // b) Coût estimé plancher : commandes Shopify SANS coût POD rattaché (Prodigi
+  //    non encore facturé, réf non matchée). Impression + expédition estimées au
+  //    prorata du CA produit, le jour de la vente, dans la région de la commande.
+  if (COST_BASIS === "connectors") {
+    let estimatedCount = 0;
+    for (const [id, o] of orders) {
+      if (o.productBase <= 0) continue;
+      if (o.keys.some((k) => coveredKeys.has(k))) continue; // déjà couvert par un coût réel
+      const region = regionOf(o.country);
+      // US = Printify (prints) ; UK/EU = Prodigi ; défaut Printify.
+      const src: SourceId = region === "UK" || region === "EU" ? "prodigi" : "printify";
+      const cogs = round2(o.productBase * ESTIMATED_COGS_RATE);
+      const ful = round2(o.productBase * ESTIMATED_FULFILLMENT_RATE);
+      if (cogs > 0) {
+        normalized.push({
+          id: `est:cogs:${id}`, source: src, kind: "cogs", occurredAt: o.at,
+          amount: -cogs, currency: BASE_CURRENCY, label: "Impression (est.)",
+          country: o.country, amountBase: -cogs, baseCurrency: BASE_CURRENCY, fxRate: 1,
+          meta: { estimated: true },
+        });
+        estimatedCount++;
+      }
+      if (ful > 0) {
+        normalized.push({
+          id: `est:ful:${id}`, source: src, kind: "fulfillment", occurredAt: o.at,
+          amount: -ful, currency: BASE_CURRENCY, label: "Expédition (est.)",
+          country: o.country, amountBase: -ful, baseCurrency: BASE_CURRENCY, fxRate: 1,
+          meta: { estimated: true },
+        });
+      }
+    }
+    if (estimatedCount > 0) {
+      const ps = statuses.find((s) => s.id === "prodigi");
+      if (ps) ps.detail += ` · +${estimatedCount} cmd estimées (coût réel non facturé)`;
     }
   }
 
