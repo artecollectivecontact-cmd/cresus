@@ -14,6 +14,22 @@ import { hasEnv } from "../config";
 const ENV = ["PRINTIFY_API_TOKEN"];
 const BASE = "https://api.printify.com/v1";
 
+// Rebate Printify Choice sur les Rolled Posters, actif depuis septembre 2026.
+// Printify facture encore le prix courant puis crédite le rabais à part, donc
+// l'API SUR-estime le coût. On déduit l'économie réelle par taille (prix
+// courant - prix custom), appliquée par article depuis REBATE_START.
+const REBATE_START = Date.parse("2026-09-01T00:00:00Z");
+const POSTER_REBATE: { re: RegExp; save: number }[] = [
+  { re: /12\s*[x×]\s*18/i, save: 5.74 - 3.48 }, // 2.26
+  { re: /20\s*[x×]\s*30/i, save: 5.26 - 4.35 }, // 0.91
+  { re: /24\s*[x×]\s*36/i, save: 7.07 - 3.83 }, // 3.24
+];
+
+interface PrintifyLineItem {
+  quantity?: number;
+  metadata?: { title?: string; variant_label?: string; sku?: string; price?: number };
+}
+
 interface PrintifyOrder {
   id: string;
   created_at: string; // "2026-09-13 16:01:43+00:00"
@@ -21,7 +37,7 @@ interface PrintifyOrder {
   total_price?: number; // centimes, prix produit
   total_shipping?: number; // centimes
   address_to?: { country?: string }; // pays de destination (ISO)
-  line_items?: { metadata?: { price?: number } }[];
+  line_items?: PrintifyLineItem[];
 }
 
 async function api<T>(token: string, path: string): Promise<T> {
@@ -51,6 +67,8 @@ export const printifyConnector: Connector = {
       const from = new Date(range.from).getTime();
       const to = new Date(range.to).getTime();
       const entries: LedgerEntry[] = [];
+      let rebateOrders = 0; // nb de commandes où un rabais a été appliqué
+      const labelSamples: string[] = []; // échantillon de libellés d'articles (debug)
       // Limite Printify pour les orders : 10 par page (au-delà => HTTP 400).
       // Commandes triées de la plus récente à la plus ancienne. Pour éviter les
       // dizaines de pages en série (=> timeout), on récupère la page 1 puis
@@ -63,8 +81,26 @@ export const printifyConnector: Connector = {
         const ref = o.metadata?.shop_order_label;
         const country = o.address_to?.country; // pays de destination (ISO)
         const iso = new Date(ts).toISOString();
-        const cogs = (o.total_price ?? 0) / 100;
+        let cogs = (o.total_price ?? 0) / 100;
         const ship = (o.total_shipping ?? 0) / 100;
+
+        // Rebate Printify Choice (Rolled Posters) : on déduit l'économie réelle
+        // par article depuis septembre. L'API facture encore le prix courant.
+        let rebateSaved = 0;
+        if (ts >= REBATE_START && o.line_items?.length) {
+          for (const li of o.line_items) {
+            const qty = li.quantity ?? 1;
+            const txt = `${li.metadata?.variant_label ?? ""} ${li.metadata?.title ?? ""} ${li.metadata?.sku ?? ""}`;
+            if (labelSamples.length < 8 && txt.trim()) labelSamples.push(txt.trim().slice(0, 60));
+            const hit = POSTER_REBATE.find((r) => r.re.test(txt));
+            if (hit) rebateSaved += hit.save * qty;
+          }
+          if (rebateSaved > 0) {
+            cogs = Math.max(0, cogs - rebateSaved);
+            rebateOrders++;
+          }
+        }
+
         if (cogs > 0) {
           entries.push({
             id: `printify:order:${o.id}:cogs`,
@@ -76,6 +112,7 @@ export const printifyConnector: Connector = {
             label: `Prod. Printify${ref ? ` (${ref})` : ""}`,
             country,
             ref,
+            meta: rebateSaved > 0 ? { rebate: Math.round(rebateSaved * 100) / 100 } : undefined,
           });
         }
         if (ship > 0) {
@@ -112,7 +149,9 @@ export const printifyConnector: Connector = {
           for (const r of results) r.data.forEach(pushOrder);
         }
       }
-      return { entries, state: "live", detail: `${entries.length} écritures` };
+      const rebateNote = rebateOrders > 0 ? ` · rebate ${rebateOrders} cmd` : "";
+      const sampleNote = labelSamples.length ? ` · ex: ${labelSamples.slice(0, 3).join(" | ")}` : "";
+      return { entries, state: "live", detail: `${entries.length} écritures${rebateNote}${sampleNote}` };
     } catch (e) {
       return { entries: [], state: "error", detail: (e as Error).message };
     }

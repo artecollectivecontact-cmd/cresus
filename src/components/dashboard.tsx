@@ -405,37 +405,37 @@ export function RoasPanel({ roas, currency, periodLabel }: { roas: RoasStats; cu
   const profitable = roas.actual !== null && roas.breakEven !== null && roas.actual >= roas.breakEven;
   const verdict =
     roas.actual === null
-      ? { tone: "text-muted", txt: "Pas de dépense pub sur la période." }
+      ? { tone: "text-muted", txt: "Pas de dépense pub sur la période (branche Meta pour le ROAS constaté)." }
       : roas.breakEven === null
       ? { tone: "text-neg", txt: "Marge produit négative : la pub ne peut pas être rentable en l'état." }
       : profitable
-      ? { tone: "text-pos", txt: "ROAS au-dessus du seuil ✅ — la pub est rentable." }
-      : { tone: "text-neg", txt: "ROAS sous le seuil ⚠️ — la pub perd de l'argent." };
+      ? { tone: "text-pos", txt: "ROAS au-dessus du seuil produit ✅ — la pub est rentable." }
+      : { tone: "text-neg", txt: "ROAS sous le seuil produit ⚠️ — la pub perd de l'argent." };
+  // Le ROAS constaté est-il au-dessus de chaque seuil ?
+  const okVs = (be: number | null) => roas.actual !== null && be !== null && roas.actual >= be;
   return (
-    <Panel
-      title="ROAS & seuil de rentabilité"
-      subtitle={`Break-even vs constaté · ${periodLabel.toLowerCase()}`}
-    >
-      <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-xl border border-line bg-panel-2 p-4">
-          <div className="text-xs uppercase tracking-wide text-muted">ROAS d&apos;équilibre (BE)</div>
-          <div className="mt-1 text-3xl font-semibold text-warn">{roasFmt(roas.breakEven)}</div>
-          <div className="mt-1 text-xs text-muted">
-            CA minimum par € de pub pour ne rien perdre
-          </div>
-        </div>
-        <div className={`rounded-xl border p-4 ${profitable ? "border-pos/40" : "border-neg/40"} bg-panel-2`}>
-          <div className="text-xs uppercase tracking-wide text-muted">ROAS constaté (blended)</div>
-          <div className={`mt-1 text-3xl font-semibold ${profitable ? "text-pos" : "text-neg"}`}>{roasFmt(roas.actual)}</div>
-          <div className="mt-1 text-xs text-muted">CA total ÷ dépense pub</div>
-        </div>
+    <Panel title="ROAS & seuils de rentabilité" subtitle={`Break-even à 3 niveaux vs constaté · ${periodLabel.toLowerCase()}`}>
+      {/* ROAS constaté (blended) en avant */}
+      <div className={`rounded-xl border p-4 ${profitable ? "border-pos/40" : "border-neg/40"} bg-panel-2`}>
+        <div className="text-xs uppercase tracking-wide text-muted">ROAS constaté (blended)</div>
+        <div className={`mt-1 text-3xl font-semibold ${profitable ? "text-pos" : "text-neg"}`}>{roasFmt(roas.actual)}</div>
+        <div className="mt-1 text-xs text-muted">CA total ÷ dépense pub</div>
+      </div>
+
+      {/* Les 3 seuils d'équilibre */}
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <BeTile label="BE impression" hint="couvre la production seule" value={roas.breakEvenPrint} ok={okVs(roas.breakEvenPrint)} hasActual={roas.actual !== null} />
+        <BeTile label="BE produit" hint="+ livraison, frais, change" value={roas.breakEven} ok={okVs(roas.breakEven)} hasActual={roas.actual !== null} primary />
+        <BeTile label="BE tout compris" hint="+ charges fixes" value={roas.breakEvenAllIn} ok={okVs(roas.breakEvenAllIn)} hasActual={roas.actual !== null} />
       </div>
 
       <div className={`mt-3 text-sm ${verdict.tone}`}>{verdict.txt}</div>
 
       <div className="mt-3 space-y-1 rounded-lg bg-panel-2 px-3 py-2 text-sm text-muted">
         <div className="flex justify-between"><span>CA (base marge)</span><span className="text-white">{money(roas.revenue, currency)}</span></div>
-        <div className="flex justify-between"><span>Coûts variables hors pub</span><span className="text-neg">−{money(roas.variableCosts, currency)}</span></div>
+        <div className="flex justify-between"><span>Coût impression/production</span><span className="text-neg">−{money(roas.printCosts, currency)}</span></div>
+        <div className="flex justify-between"><span>Coûts variables (total hors pub)</span><span className="text-neg">−{money(roas.variableCosts, currency)}</span></div>
+        <div className="flex justify-between"><span>Charges fixes (réparties)</span><span className="text-neg">{roas.fixedCosts ? `−${money(roas.fixedCosts, currency)}` : "—"}</span></div>
         <div className="flex justify-between border-t border-line pt-1">
           <span>Marge de contribution avant pub</span>
           <span className={signedClass(roas.contributionMargin)}>{money(roas.contributionMargin, currency)} <span className="text-xs">({pct(roas.marginRate)})</span></span>
@@ -444,10 +444,22 @@ export function RoasPanel({ roas, currency, periodLabel }: { roas: RoasStats; cu
       </div>
 
       <p className="mt-2 text-[11px] text-muted">
-        ROAS constaté = « blended » (toutes ventes ÷ pub), faute d&apos;attribution par campagne. Le seuil exclut les
-        charges fixes (salaires, loyer…) : il mesure la rentabilité produit. Vise un ROAS constaté &gt; ROAS d&apos;équilibre.
+        3 seuils cumulatifs : <strong>impression</strong> (production seule) → <strong>produit</strong> (tous coûts variables, le seuil que ton
+        ROAS doit battre) → <strong>tout compris</strong> (+ salaires, Urssaf, abonnements, estimés depuis Qonto). ROAS constaté = « blended »,
+        faute d&apos;attribution par campagne.
       </p>
     </Panel>
+  );
+}
+
+function BeTile({ label, hint, value, ok, hasActual, primary }: { label: string; hint: string; value: number | null; ok: boolean; hasActual: boolean; primary?: boolean }) {
+  const tone = !hasActual ? "text-warn" : ok ? "text-pos" : "text-neg";
+  return (
+    <div className={`rounded-lg p-3 ${primary ? "bg-panel-2 ring-1 ring-line" : "bg-panel-2"}`}>
+      <div className="text-[11px] uppercase tracking-wide text-muted">{label}</div>
+      <div className={`mt-1 text-xl font-semibold ${tone}`}>{roasFmt(value)}</div>
+      <div className="mt-0.5 text-[10px] text-muted">{hint}</div>
+    </div>
   );
 }
 

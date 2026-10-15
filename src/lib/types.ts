@@ -126,21 +126,29 @@ export interface PeriodSlice {
   range?: { from: string; to: string };
 }
 
-/** ROAS constaté (blended/MER) et ROAS d'équilibre (break-even). */
+/** ROAS constaté (blended/MER) et ROAS d'équilibre (break-even) à 3 niveaux. */
 export interface RoasStats {
   currency: Currency;
   /** CA de la période (base marge). */
   revenue: number;
   /** Dépense publicitaire de la période. */
   adSpend: number;
+  /** Coût d'impression/production seul (POD cogs). */
+  printCosts: number;
   /** Coûts variables hors pub (impression + cadres + livraison + frais + change + remboursements). */
   variableCosts: number;
+  /** Charges fixes réparties sur la période (salaires, Urssaf, abonnements…). */
+  fixedCosts: number;
   /** Marge de contribution avant pub = CA − coûts variables hors pub. */
   contributionMargin: number;
   /** Taux de marge de contribution = contributionMargin / CA. */
   marginRate: number;
-  /** ROAS d'équilibre = 1 / marginRate (CA nécessaire par € de pub). null si marge ≤ 0. */
+  /** ROAS d'équilibre « impression seule » (ne couvre que la production). */
+  breakEvenPrint: number | null;
+  /** ROAS d'équilibre produit (tous coûts variables) — le seuil que la pub doit battre. */
   breakEven: number | null;
+  /** ROAS d'équilibre « tout compris » (+ charges fixes). */
+  breakEvenAllIn: number | null;
   /** ROAS constaté (blended) = CA total / dépense pub. null si aucune pub. */
   actual: number | null;
 }

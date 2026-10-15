@@ -491,7 +491,8 @@ function aggregatePeriod(
   dated: Dated[],
   key: PeriodKey | "custom",
   label: string,
-  pred: (d: string) => boolean
+  pred: (d: string) => boolean,
+  fixedCosts = 0
 ): PeriodSlice {
   const bucket = emptyBucket(key, new Date().toISOString());
   const refs = new Set<string>();
@@ -507,36 +508,45 @@ function aggregatePeriod(
   finalizeBucket(bucket, refs.size);
   const tax = projectTax(inWindow, bucket.net);
   const conversionFee = conversionFeeFor(dated, pred);
-  const roas = roasFor(bucket, conversionFee.total);
+  const roas = roasFor(bucket, conversionFee.total, fixedCosts);
   return { key, label, bucket, bySource, tax, conversionFee, roas };
 }
 
+/** ROAS d'équilibre = CA par € de pub pour couvrir un niveau de coûts donné. */
+function breakEvenRoas(revenue: number, costs: number): number | null {
+  const margin = revenue - costs;
+  return margin > 0 ? round2(revenue / margin) : null;
+}
+
 /**
- * ROAS d'équilibre (break-even) et ROAS constaté.
- * - Marge de contribution avant pub = CA − coûts variables hors pub
- *   (impression, cadres, livraison, frais Shopify, frais de change, remboursements).
- *   Les charges fixes (expenses : salaires, loyer…) sont EXCLUES : le ROAS BE
- *   mesure la rentabilité produit, pas la couverture des frais de structure.
- * - ROAS BE = 1 / taux de marge : le CA qu'il faut générer par € de pub pour
- *   que la pub s'autofinance.
- * - ROAS constaté = CA total / dépense pub (blended / MER, toutes ventes
- *   confondues — on n'a pas d'attribution par campagne).
+ * ROAS constaté (blended) et ROAS d'équilibre à 3 niveaux cumulatifs :
+ * - « impression seule » : ne couvre que la production POD (le plus permissif) ;
+ * - « produit » : + livraison, frais Shopify, change, remboursements — c'est le
+ *   seuil que ton ROAS pub doit battre pour que la pub soit rentable ;
+ * - « tout compris » : + charges fixes (salaires, Urssaf, abonnements…).
+ * ROAS constaté = CA total / dépense pub (blended/MER — pas d'attribution par
+ * campagne, donc toutes ventes confondues).
  */
-function roasFor(b: PnLBucket, conversionFeeTotal: number): RoasStats {
+function roasFor(b: PnLBucket, conversionFeeTotal: number, fixedCosts: number): RoasStats {
   const revenue = b.revenue;
+  const printCosts = round2(b.cogs);
   const variableCosts = round2(b.cogs + b.fulfillment + b.shipping + b.fees + b.refunds + conversionFeeTotal);
+  const fixed = round2(fixedCosts + b.expenses);
   const contributionMargin = round2(revenue - variableCosts);
   const marginRate = revenue > 0 ? contributionMargin / revenue : 0;
-  const breakEven = marginRate > 0 ? round2(1 / marginRate) : null;
   const actual = b.ads > 0 ? round2(revenue / b.ads) : null;
   return {
     currency: BASE_CURRENCY,
     revenue,
     adSpend: b.ads,
+    printCosts,
     variableCosts,
+    fixedCosts: fixed,
     contributionMargin,
     marginRate: round2(marginRate * 1000) / 1000,
-    breakEven,
+    breakEvenPrint: breakEvenRoas(revenue, printCosts),
+    breakEven: breakEvenRoas(revenue, variableCosts),
+    breakEvenAllIn: breakEvenRoas(revenue, variableCosts + fixed),
     actual,
   };
 }
@@ -557,6 +567,22 @@ function reconcileSums(
     }
   }
   return { accounting: round2(accounting), bankOut: round2(bankOut), bankIn: round2(bankIn) };
+}
+
+// Charges fixes/structure = sorties Qonto HORS coûts variables déjà comptés
+// (pub Meta + fournisseurs POD) et HORS reversements d'impôts (TVA pass-through,
+// pas une charge). Reste : salaires, Urssaf, abonnements, loyers, compta…
+const OVERHEAD_EXCLUDE = /meta|prodigi|printify|artelo|hmrc|vat|tva|\bis\b|imp[oô]t/i;
+
+function overheadFromQonto(dated: Dated[], pred: (d: string) => boolean): number {
+  let sum = 0;
+  for (const { e, day } of dated) {
+    if (!pred(day)) continue;
+    if (e.source !== "qonto" || e.amountBase >= 0) continue; // sorties uniquement
+    if (OVERHEAD_EXCLUDE.test(e.label || "")) continue;
+    sum += -e.amountBase;
+  }
+  return round2(sum);
 }
 
 type FeeAcc = { payments: number; currency: number; vat: number; other: number };
@@ -757,11 +783,37 @@ export async function debugSample() {
     .slice(0, 20)
     .map(([name, total]) => ({ name, total: Math.round(total) }));
 
+  // Impression (cogs) par jour et par région — diagnostic des colonnes vides.
+  const perDay = new Map<string, { US: number; UK: number; EU: number; Autres: number; est: number }>();
+  for (const e of normalized) {
+    if (e.reconcileOnly || e.kind !== "cogs") continue;
+    const day = localParts(e.occurredAt).day;
+    const r = regionOf(e.country) as "US" | "UK" | "EU" | "Autres";
+    const slot = perDay.get(day) ?? { US: 0, UK: 0, EU: 0, Autres: 0, est: 0 };
+    slot[r] += -e.amountBase;
+    if (e.meta?.estimated) slot.est += -e.amountBase;
+    perDay.set(day, slot);
+  }
+  const dailyPrint = [...perDay.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([day, v]) => ({
+      day,
+      US: Math.round(v.US),
+      UK: Math.round(v.UK),
+      EU: Math.round(v.EU),
+      Autres: Math.round(v.Autres),
+      estime: Math.round(v.est),
+    }));
+
+  const rebateCount = normalized.filter((e) => e.source === "printify" && e.meta?.rebate).length;
+
   return {
     sources: statuses.map((s) => ({ id: s.id, state: s.state, entries: s.entryCount, detail: s.detail })),
     shopifySamples: shopify,
     costSamples: bySource,
     qontoTop,
+    dailyPrint,
+    rebateCount,
   };
 }
 
@@ -776,11 +828,15 @@ export async function buildReport(): Promise<PnLReport> {
 
   const daily = buildDailyBuckets(dated, 30, today);
 
+  // Charges fixes sur 30 j (Qonto hors variable/impôts), proratisées par période.
+  const overhead30 = overheadFromQonto(dated, (d) => d >= from(30));
+  const fixedFor = (days: number) => round2((overhead30 * days) / 30);
+
   const periods: Record<PeriodKey, PeriodSlice> = {
-    day: aggregatePeriod(dated, "day", "Aujourd'hui", (d) => d === today),
-    week: aggregatePeriod(dated, "week", "7 jours", (d) => d >= from(7)),
-    d14: aggregatePeriod(dated, "d14", "14 jours", (d) => d >= from(14)),
-    d30: aggregatePeriod(dated, "d30", "30 jours", (d) => d >= from(30)),
+    day: aggregatePeriod(dated, "day", "Aujourd'hui", (d) => d === today, fixedFor(1)),
+    week: aggregatePeriod(dated, "week", "7 jours", (d) => d >= from(7), fixedFor(7)),
+    d14: aggregatePeriod(dated, "d14", "14 jours", (d) => d >= from(14), fixedFor(14)),
+    d30: aggregatePeriod(dated, "d30", "30 jours", (d) => d >= from(30), fixedFor(30)),
   };
 
   // Rapprochement sur 30 jours.
@@ -819,7 +875,15 @@ export async function buildCustomSlice(fromDay: string, toDay: string): Promise<
   const { normalized } = await getData();
   const dated: Dated[] = normalized.map((e) => ({ e, day: localParts(e.occurredAt).day }));
   const [lo, hi] = fromDay <= toDay ? [fromDay, toDay] : [toDay, fromDay];
-  const slice = aggregatePeriod(dated, "custom", "Période perso", (d) => d >= lo && d <= hi);
+  // Charges fixes proratisées sur la durée de la plage (30 j de référence).
+  const d0 = Date.parse(`${lo}T00:00:00Z`);
+  const d1 = Date.parse(`${hi}T00:00:00Z`);
+  const days = Math.max(1, Math.round((d1 - d0) / 86_400_000) + 1);
+  const today = todayLocal();
+  const win30 = shiftDay(today, -29);
+  const overhead30 = overheadFromQonto(dated, (d) => d >= win30);
+  const fixed = round2((overhead30 * days) / 30);
+  const slice = aggregatePeriod(dated, "custom", "Période perso", (d) => d >= lo && d <= hi, fixed);
   slice.range = { from: lo, to: hi };
   return slice;
 }
