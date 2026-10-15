@@ -14,6 +14,8 @@ import {
   ReconciliationPanel,
   ConversionFeePanel,
   RoasPanel,
+  FixedCostsPanel,
+  ConseilPanel,
   SourceStatusPanel,
   type PeriodChoice,
 } from "./dashboard";
@@ -25,6 +27,7 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<PeriodChoice>("day");
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [view, setView] = useState<"dashboard" | "conseils">("dashboard");
   const started = useRef(false);
 
   // Période perso (dates bornées aux 30 jours chargés).
@@ -158,6 +161,34 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
         </div>
       )}
 
+      {/* Onglets Tableau de bord / Conseils */}
+      <div className="mb-4 inline-flex rounded-lg border border-line bg-panel p-1 text-sm">
+        {([["dashboard", "Tableau de bord"], ["conseils", "Conseils"]] as const).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setView(k)}
+            className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+              view === k ? "bg-accent text-ink" : "text-muted hover:text-white"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "conseils" && (
+        <>
+          <div className="mb-4">
+            <ConseilPanel report={report} />
+          </div>
+          <div className="mb-4">
+            <FixedCostsPanel fx={report.fixedCosts} currency={report.currency} />
+          </div>
+        </>
+      )}
+
+      {view === "dashboard" && (
+        <>
       {/* Sélecteur de période */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <PeriodTabs value={period} onChange={setPeriod} />
@@ -248,8 +279,14 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
       </div>
 
       <div className="mb-4">
+        <FixedCostsPanel fx={report.fixedCosts} currency={report.currency} />
+      </div>
+
+      <div className="mb-4">
         <SourceStatusPanel sources={report.sources} />
       </div>
+        </>
+      )}
 
       <footer className="mt-8 text-center text-xs text-muted">
         Crésus — hébergé sur Vercel · projections fiscales indicatives, à valider avec la compta.

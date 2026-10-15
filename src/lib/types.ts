@@ -186,9 +186,22 @@ export interface PnLReport {
   reconciliation: Reconciliation;
   /** Frais de conversion $/£ -> € estimés, agrégés par mois (surtout Artelo). */
   conversionFees: ConversionFeeReport;
+  /** Détail des charges fixes (Qonto hors variable/impôts), 30 jours. */
+  fixedCosts: FixedCostsReport;
   /** true si le rapport utilise des données de démonstration (pas de clés API). */
   demo: boolean;
   generatedAt: string;
+}
+
+/** Charges fixes / de structure, ventilées par bénéficiaire (30 jours). */
+export interface FixedCostsReport {
+  /** Total sur 30 jours (EUR). */
+  total: number;
+  /** Montant par jour (total / 30). */
+  perDay: number;
+  /** Postes principaux (salaires, Urssaf, abonnements…). */
+  items: { name: string; amount: number }[];
+  currency: Currency;
 }
 
 /** Frais de conversion de devise (spread carte/banque) estimés par mois. */

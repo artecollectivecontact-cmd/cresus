@@ -1,4 +1,4 @@
-import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak, ConversionFeeReport, ConversionFeeSlice, RoasStats } from "@/lib/types";
+import type { PnLBucket, BySource, SourceStatus, TaxProjection, Reconciliation, PeriodKey, RegionBreak, ConversionFeeReport, ConversionFeeSlice, RoasStats, FixedCostsReport, PnLReport } from "@/lib/types";
 import { money, pct, usd, dayLabel, signedClass } from "@/lib/format";
 
 export type PeriodChoice = PeriodKey | "custom";
@@ -173,6 +173,11 @@ export function DailyChart({
           const active = d.key === selected;
           // Net TOUT COMPRIS (après charges fixes) pour coller au verdict.
           const net = round2(d.net - (d.roas?.fixedCosts ?? 0));
+          // 3 teintes : vert = rentable tout compris · orange = couvre la pub
+          // mais pas les charges fixes · rouge = perd même avant charges fixes.
+          const tier = net >= 0 ? "pos" : d.net >= 0 ? "warn" : "neg";
+          const barColor = tier === "pos" ? "bg-pos/60" : tier === "warn" ? "bg-warn/60" : "bg-neg/60";
+          const txtColor = tier === "pos" ? "text-pos" : tier === "warn" ? "text-warn" : "text-neg";
           return (
             <button
               key={d.key}
@@ -180,14 +185,14 @@ export function DailyChart({
               className="group relative flex-1 flex flex-col justify-end items-center h-full min-w-0"
             >
               {showNet && (
-                <div className={`mb-1 text-[10px] font-semibold leading-none ${signedClass(net)}`}>
+                <div className={`mb-1 text-[10px] font-semibold leading-none ${txtColor}`}>
                   {net >= 0 ? "+" : ""}{compact(net, currency)}
                 </div>
               )}
               <div
-                className={`w-full rounded-t transition-opacity ${
-                  net >= 0 ? "bg-accent/50" : "bg-neg/50"
-                } ${active ? "ring-2 ring-white/70 opacity-100" : "group-hover:opacity-80"}`}
+                className={`w-full rounded-t transition-opacity ${barColor} ${
+                  active ? "ring-2 ring-white/70 opacity-100" : "group-hover:opacity-80"
+                }`}
                 style={{ height: `${Math.max(revH, 1)}%` }}
               />
               {n <= 14 && (
@@ -203,7 +208,12 @@ export function DailyChart({
           );
         })}
       </div>
-      {n > 14 && <p className="mt-2 text-[10px] text-muted">Survole ou clique une barre pour la marge et le détail du jour.</p>}
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted">
+        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-pos/60" /> rentable (tout compris)</span>
+        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-warn/60" /> couvre la pub, pas les charges fixes</span>
+        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-neg/60" /> déficit</span>
+      </div>
+      {n > 14 && <p className="mt-1 text-[10px] text-muted">Survole ou clique une barre pour la marge et le détail du jour.</p>}
     </Panel>
   );
 }
@@ -625,6 +635,142 @@ export function ConversionFeePanel({
           <li key={i}>• {n}</li>
         ))}
       </ul>
+    </Panel>
+  );
+}
+
+// --- Charges fixes (détail) --------------------------------------------------
+
+const REGION_LABELS_SHORT: Record<string, string> = { US: "🇺🇸 US", UK: "🇬🇧 UK", EU: "🇪🇺 EU", Autres: "🌍 Autres" };
+
+export function FixedCostsPanel({ fx, currency }: { fx: FixedCostsReport; currency: string }) {
+  return (
+    <Panel title="Charges fixes" subtitle={`Structure hors pub & POD (Qonto, 30 j) · ${money(fx.perDay, currency)}/jour`}>
+      {fx.items.length === 0 ? (
+        <p className="text-sm text-muted">Aucune charge fixe détectée sur Qonto (hors pub, POD et impôts).</p>
+      ) : (
+        <div className="space-y-1">
+          {fx.items.map((i) => (
+            <div key={i.name} className="flex items-center justify-between rounded-lg bg-panel-2 px-3 py-1.5 text-sm">
+              <span className="truncate pr-2">{i.name}</span>
+              <span className="text-neg whitespace-nowrap">−{money(i.amount, currency)}</span>
+            </div>
+          ))}
+          <div className="mt-2 flex items-center justify-between border-t border-line pt-2 text-sm font-semibold">
+            <span>Total 30 jours</span>
+            <span className="text-neg">−{money(fx.total, currency)}</span>
+          </div>
+        </div>
+      )}
+      <p className="mt-2 text-[11px] text-muted">
+        Réparties à {money(fx.perDay, currency)}/jour dans la marge nette et le seuil de rentabilité. Déduites des sorties
+        Qonto en excluant pub Meta, fournisseurs POD et reversements d&apos;impôts (TVA/IS).
+      </p>
+    </Panel>
+  );
+}
+
+// --- Onglet Conseils : analyses & recommandations ----------------------------
+
+type Insight = { tone: "pos" | "warn" | "neg" | "info"; title: string; text: string };
+
+function computeInsights(report: PnLReport): Insight[] {
+  const cur = report.currency;
+  const d30 = report.periods.d30;
+  const roas = d30.roas;
+  const out: Insight[] = [];
+
+  // Agrégats par région sur 30 j (depuis les buckets journaliers).
+  const reg = new Map<string, { rev: number; ads: number; print: number; frames: number; ship: number; fees: number }>();
+  for (const d of report.daily) {
+    for (const r of d.regions ?? []) {
+      const s = reg.get(r.region) || { rev: 0, ads: 0, print: 0, frames: 0, ship: 0, fees: 0 };
+      s.rev += r.revenue; s.ads += r.ads; s.print += r.print; s.frames += r.frames; s.ship += r.shipping; s.fees += r.fees;
+      reg.set(r.region, s);
+    }
+  }
+  const regions = [...reg.entries()]
+    .map(([region, s]) => ({ region, ...s, roas: s.ads > 0 ? s.rev / s.ads : null, marge: s.rev - s.print - s.frames - s.ship - s.fees - s.ads }))
+    .filter((r) => r.rev > 0);
+
+  const netAllIn = round2(d30.bucket.net - roas.fixedCosts);
+
+  // 1) Rentabilité globale 30 j.
+  if (netAllIn >= 0) {
+    out.push({ tone: "pos", title: "Rentable sur 30 jours", text: `Marge nette tout compris : ${money(netAllIn, cur)} (${pct(d30.bucket.revenue > 0 ? netAllIn / d30.bucket.revenue : 0)} du CA). Continue, et réinvestis sur les régions au meilleur ROAS.` });
+  } else {
+    out.push({ tone: "neg", title: "En déficit sur 30 jours", text: `Tu perds ${money(Math.abs(netAllIn), cur)} après charges fixes. Priorité : remonter le ROAS global (${roas.actual ? roas.actual.toLocaleString("fr-FR", { maximumFractionDigits: 2 }) + "×" : "—"}) au-dessus du seuil tout compris (${roas.breakEvenAllIn ? roas.breakEvenAllIn.toLocaleString("fr-FR", { maximumFractionDigits: 2 }) + "×" : "—"}).` });
+  }
+
+  // 2) ROAS vs seuils.
+  if (roas.actual !== null && roas.breakEvenAllIn !== null) {
+    if (roas.actual < roas.breakEvenAllIn) {
+      const needPct = Math.round(((roas.breakEvenAllIn - roas.actual) / roas.actual) * 100);
+      out.push({ tone: "warn", title: "ROAS sous le seuil « tout compris »", text: `Ton ROAS ${roas.actual.toFixed(2)}× doit atteindre ${roas.breakEvenAllIn.toFixed(2)}× pour tout couvrir : +${needPct}% d'efficacité pub, ou baisser le coût par commande, ou monter l'AOV.` });
+    } else if (roas.actual >= roas.breakEven! * 1.3) {
+      out.push({ tone: "pos", title: "Marge pour scaler", text: `ROAS ${roas.actual.toFixed(2)}× bien au-dessus du seuil produit (${roas.breakEven!.toFixed(2)}×) : il y a de la marge pour augmenter le budget pub.` });
+    }
+  }
+
+  // 3) Meilleure / pire région.
+  const withRoas = regions.filter((r) => r.roas !== null).sort((a, b) => (b.roas! - a.roas!));
+  if (withRoas.length >= 2) {
+    const best = withRoas[0], worst = withRoas[withRoas.length - 1];
+    out.push({ tone: "pos", title: `Meilleure région : ${REGION_LABELS_SHORT[best.region] ?? best.region}`, text: `ROAS ${best.roas!.toFixed(2)}× (marge ${money(best.marge, cur)} sur 30 j). C'est là qu'il faut mettre plus de budget pub en priorité.` });
+    if (worst.roas! < 2.5) {
+      out.push({ tone: "warn", title: `Région à surveiller : ${REGION_LABELS_SHORT[worst.region] ?? worst.region}`, text: `ROAS ${worst.roas!.toFixed(2)}× — proche ou sous l'équilibre. Resserre le ciblage, teste des créas, ou augmente le panier moyen avant de scaler.` });
+    }
+  }
+
+  // 4) Jours en déficit.
+  const days = report.daily;
+  const deficit = days.filter((d) => round2(d.net - (d.roas?.fixedCosts ?? 0)) < 0).length;
+  if (days.length > 0) {
+    const tone = deficit > days.length / 2 ? "neg" : deficit > days.length / 4 ? "warn" : "pos";
+    out.push({ tone, title: `${deficit}/${days.length} jours en déficit`, text: deficit === 0 ? "Tous les jours sont rentables tout compris. Excellent." : `${deficit} jours ne couvrent pas tous les coûts. Regarde ces jours : souvent c'est un ROAS bas ou un pic de dépense pub.` });
+  }
+
+  // 5) Frais de conversion.
+  const cf = report.conversionFees;
+  const cfTotal = cf.months.reduce((s, m) => s + m.total, 0);
+  if (cfTotal > 0) {
+    out.push({ tone: "info", title: "Frais de change", text: `Tu paies ~${money(cfTotal, cur)} de frais de conversion $ sur la période (${pct(cf.feeRate)} par facture USD). Un compte multidevise (Wise, Qonto USD, carte sans frais FX) pour régler Printify/Artelo en USD les réduirait fortement.` });
+  }
+
+  // 6) Poids des charges fixes.
+  if (roas.marginRate > 0) {
+    const caForFixed = report.fixedCosts.perDay / roas.marginRate;
+    out.push({ tone: "info", title: "Charges fixes à couvrir", text: `${money(report.fixedCosts.perDay, cur)}/jour de structure. Avec ta marge de ${pct(roas.marginRate)}, il faut ${money(caForFixed, cur)} de CA/jour rien que pour les couvrir (avant même de payer la pub).` });
+  }
+
+  // 7) Fraîcheur Prodigi.
+  const prod = report.sources.find((s) => s.id === "prodigi");
+  if (prod && /CSV/.test(prod.detail)) {
+    out.push({ tone: "info", title: "Coûts Prodigi via export CSV", text: "Les coûts UK/EU viennent d'un export CSV Prodigi (l'API ne liste rien). Pense à réexporter chaque semaine pour garder les coûts à jour ; les jours récents non couverts sont estimés." });
+  }
+
+  return out;
+}
+
+export function ConseilPanel({ report }: { report: PnLReport }) {
+  const insights = computeInsights(report);
+  const dot: Record<Insight["tone"], string> = { pos: "bg-pos", warn: "bg-warn", neg: "bg-neg", info: "bg-accent" };
+  return (
+    <Panel title="Conseils & analyses" subtitle="Lecture automatique des 30 derniers jours — pistes concrètes d'amélioration">
+      <div className="space-y-3">
+        {insights.map((i, k) => (
+          <div key={k} className="flex gap-3 rounded-lg bg-panel-2 px-3 py-2">
+            <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${dot[i.tone]}`} />
+            <div>
+              <div className="text-sm font-semibold">{i.title}</div>
+              <div className="text-sm text-muted">{i.text}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-[11px] text-muted">
+        Analyses indicatives, basées sur les données connectées (POD en partie estimé). À croiser avec ton jugement métier.
+      </p>
     </Panel>
   );
 }

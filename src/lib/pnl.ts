@@ -4,6 +4,7 @@ import type {
   ConversionFeeMonth,
   ConversionFeeReport,
   ConversionFeeSlice,
+  FixedCostsReport,
   LedgerEntry,
   RoasStats,
   NormalizedEntry,
@@ -621,6 +622,24 @@ function overheadFromQonto(dated: Dated[], pred: (d: string) => boolean): number
   return round2(sum);
 }
 
+/** Charges fixes ventilées par bénéficiaire (Qonto hors variable/impôts). */
+function buildFixedCosts(dated: Dated[], pred: (d: string) => boolean): FixedCostsReport {
+  const byName = new Map<string, number>();
+  for (const { e, day } of dated) {
+    if (!pred(day)) continue;
+    if (e.source !== "qonto" || e.amountBase >= 0) continue;
+    if (OVERHEAD_EXCLUDE.test(e.label || "")) continue;
+    const name = (e.label || "Autre").trim();
+    byName.set(name, (byName.get(name) ?? 0) + -e.amountBase);
+  }
+  const items = [...byName.entries()]
+    .map(([name, amount]) => ({ name, amount: round2(amount) }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 15);
+  const total = round2([...byName.values()].reduce((s, v) => s + v, 0));
+  return { total, perDay: round2(total / 30), items, currency: BASE_CURRENCY };
+}
+
 type FeeAcc = { payments: number; currency: number; vat: number; other: number };
 
 function buildDailyBuckets(dated: Dated[], n: number, today: string, overhead30 = 0): PnLBucket[] {
@@ -899,7 +918,8 @@ export async function buildReport(): Promise<PnLReport> {
   const from = (n: number) => shiftDay(today, -(n - 1)); // fenêtre de n jours incluant aujourd'hui
 
   // Charges fixes sur 30 j (Qonto hors variable/impôts), proratisées par période.
-  const overhead30 = overheadFromQonto(dated, (d) => d >= from(30));
+  const fixedCostsReport = buildFixedCosts(dated, (d) => d >= from(30));
+  const overhead30 = fixedCostsReport.total;
   const fixedFor = (days: number) => round2((overhead30 * days) / 30);
 
   const daily = buildDailyBuckets(dated, 30, today, overhead30);
@@ -933,6 +953,7 @@ export async function buildReport(): Promise<PnLReport> {
     sources: statuses,
     reconciliation,
     conversionFees,
+    fixedCosts: fixedCostsReport,
     demo,
     generatedAt: new Date().toISOString(),
   };
