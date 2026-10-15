@@ -43,12 +43,15 @@ export const CORPORATE_TAX_RATE = Number(process.env.CORPORATE_TAX_RATE ?? 0.25)
 export const COST_BASIS = (process.env.COST_BASIS as "connectors" | "pennylane") || "connectors";
 
 /**
- * Coût de production estimé (POD) tant que Printify/Prodigi/Artelo ne sont pas
- * branchés. Ratio appliqué au CA HT. À remplacer par les coûts réels par
- * commande dès que les connecteurs fournisseurs renvoient des données live.
+ * Coût de production estimé (POD) tant que Printify/Prodigi/Artelo ne renvoient
+ * pas le coût réel d'une commande (Prodigi facture au mois, réf non matchée...).
+ * Ratios appliqués au CA produit HT, CALIBRÉS sur la réalité : coût POD réel
+ * (Qonto : Prodigi + Printify + Artelo ≈ 21 k€) ÷ CA net produit (≈ 88 k$) ≈ 26 %,
+ * réparti ~19 % impression + ~7 % livraison d'après les ratios Printify/Artelo.
+ * Ajustables via ESTIMATED_COGS_RATE / ESTIMATED_FULFILLMENT_RATE dans Vercel.
  */
-export const ESTIMATED_COGS_RATE = Number(process.env.ESTIMATED_COGS_RATE ?? 0.28);
-export const ESTIMATED_FULFILLMENT_RATE = Number(process.env.ESTIMATED_FULFILLMENT_RATE ?? 0.06);
+export const ESTIMATED_COGS_RATE = Number(process.env.ESTIMATED_COGS_RATE ?? 0.19);
+export const ESTIMATED_FULFILLMENT_RATE = Number(process.env.ESTIMATED_FULFILLMENT_RATE ?? 0.07);
 
 /** Frais de transaction Shopify Basic + passerelle (approx.), ratio du CA TTC. */
 export const PAYMENT_FEE_RATE = Number(process.env.PAYMENT_FEE_RATE ?? 0.029);
