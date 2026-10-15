@@ -262,6 +262,39 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
                 );
               })}
             </tbody>
+            <tfoot>
+              {(() => {
+                const t = regions.reduce(
+                  (a, r) => ({
+                    revenue: a.revenue + r.revenue,
+                    ads: a.ads + r.ads,
+                    print: a.print + r.print,
+                    frames: a.frames + r.frames,
+                    shipping: a.shipping + r.shipping,
+                    taxes: a.taxes + r.taxes,
+                    fees: a.fees + r.fees,
+                  }),
+                  { revenue: 0, ads: 0, print: 0, frames: 0, shipping: 0, taxes: 0, fees: 0 }
+                );
+                const marge = t.revenue - t.print - t.frames - t.shipping - t.fees - t.ads;
+                const roas = t.ads > 0 ? t.revenue / t.ads : null;
+                return (
+                  <tr className="border-t-2 border-line font-semibold">
+                    <td className="py-2 pr-3">Total</td>
+                    <td className="py-2 px-2 text-right">{money(t.revenue, currency)}</td>
+                    <td className="py-2 px-2 text-right text-neg">{t.ads ? `−${money(t.ads, currency)}` : "—"}</td>
+                    <td className={`py-2 px-2 text-right ${roas && roas >= 2 ? "text-pos" : "text-warn"}`}>
+                      {roas ? `${roas.toLocaleString("fr-FR", { maximumFractionDigits: 2 })}×` : "—"}
+                    </td>
+                    <td className="py-2 px-2 text-right text-neg">{t.print ? `−${money(t.print, currency)}` : "—"}</td>
+                    <td className="py-2 px-2 text-right text-neg">{t.frames ? `−${money(t.frames, currency)}` : "—"}</td>
+                    <td className="py-2 px-2 text-right text-neg">{t.shipping ? `−${money(t.shipping, currency)}` : "—"}</td>
+                    <td className="py-2 px-2 text-right text-warn">{t.taxes ? money(t.taxes, currency) : "—"}</td>
+                    <td className={`py-2 pl-2 text-right ${signedClass(marge)}`}>{money(marge, currency)}</td>
+                  </tr>
+                );
+              })()}
+            </tfoot>
           </table>
         </div>
       )}
