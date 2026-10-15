@@ -24,7 +24,8 @@ export const metaConnector: Connector = {
 
   async fetch(range: DateRange): Promise<FetchResult> {
     if (!hasEnv(ENV)) {
-      return { entries: [], state: "stub", detail: "clé absente (META_ACCESS_TOKEN)" };
+      const missing = ENV.filter((k) => !process.env[k] || !process.env[k]!.trim());
+      return { entries: [], state: "stub", detail: `clé absente : ${missing.join(" + ")}` };
     }
     const token = process.env.META_ACCESS_TOKEN!;
     const acct = process.env.META_AD_ACCOUNT_ID!; // format "act_123456"
