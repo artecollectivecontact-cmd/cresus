@@ -231,7 +231,7 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
       </div>
 
       {/* Zone seuil de rentabilité (BE) — ce qu'il faut atteindre ce jour-là */}
-      {roas && <DayBreakEven roas={roas} currency={currency} />}
+      {roas && <DayBreakEven roas={roas} net={round2(bucket.net - roas.fixedCosts)} currency={currency} />}
 
       {/* Postes par région (CA, pub, ROAS, coûts, marge) */}
       {regions.length === 0 ? (
@@ -342,12 +342,13 @@ export function DayDetail({ bucket, currency, usdPerEur }: { bucket: PnLBucket; 
 }
 
 /** Zone seuil de rentabilité d'un jour, en langage clair. */
-function DayBreakEven({ roas, currency }: { roas: RoasStats; currency: string }) {
+function DayBreakEven({ roas, net, currency }: { roas: RoasStats; net: number; currency: string }) {
   const m = roas.marginRate;
   // CA à atteindre pour couvrir pub + charges fixes (le reste étant proportionnel).
   const target = m > 0 ? (roas.adSpend + roas.fixedCosts) / m : null;
-  const reached = target !== null && roas.revenue >= target;
-  const gap = target !== null ? Math.abs(roas.revenue - target) : 0;
+  const reached = net >= 0;
+  // CA à ajouter/en trop : la perte (ou le gain) ÷ la marge produit.
+  const gap = m > 0 ? Math.abs(net) / m : 0;
   return (
     <div className="rounded-xl border border-line bg-panel-2 p-3">
       <div className="mb-1 text-xs uppercase tracking-wide text-muted">Seuil de rentabilité du jour</div>
@@ -360,16 +361,25 @@ function DayBreakEven({ roas, currency }: { roas: RoasStats; currency: string })
             <strong> {money(roas.fixedCosts, currency)}</strong>), il faut faire{" "}
             <strong className="text-white">{money(target, currency)}</strong> de CA.
           </p>
-          <p className={`mt-1 text-sm font-semibold ${reached ? "text-pos" : "text-warn"}`}>
+          <p className={`mt-1 text-sm font-semibold ${reached ? "text-pos" : "text-neg"}`}>
             {reached ? (
-              <>Tu es à {money(roas.revenue, currency)} → rentable ✅ (+{money(gap, currency)})</>
+              <>Tu es à {money(roas.revenue, currency)} → rentable ✅ (marge {money(net, currency)})</>
             ) : (
               <>Tu es à {money(roas.revenue, currency)} → il manque {money(gap, currency)} de CA</>
             )}
           </p>
-          <p className="mt-1 text-[11px] text-muted">
-            Avec une marge produit de {pct(m)}, chaque euro de CA dégage {money(m, currency)} pour payer pub et frais fixes.
-          </p>
+          {!reached && (
+            <p className="mt-1 text-[11px] text-muted">
+              Ta perte du jour est de <strong className="text-neg">{money(net, currency)}</strong>, mais il faut{" "}
+              <strong>{money(gap, currency)}</strong> de CA en plus (pas {money(net, currency)}) : chaque euro de CA ne laisse que{" "}
+              {money(m, currency)} après coûts produit ({pct(m)} de marge).
+            </p>
+          )}
+          {reached && (
+            <p className="mt-1 text-[11px] text-muted">
+              Marge produit {pct(m)} : chaque euro de CA dégage {money(m, currency)} pour payer pub et charges fixes.
+            </p>
+          )}
         </>
       )}
     </div>
