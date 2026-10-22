@@ -268,7 +268,7 @@ const DATA_TTL_MS = Number(process.env.DATA_TTL_MS ?? 180_000); // 3 min
 // Fenêtre d'historique récupérée (jours). 60 par défaut ; ajustable via
 // DATA_DAYS. Au-delà, c'est plus lent (plus de commandes à récupérer) ; les
 // jours Printify au-delà du plafond de pages sont comblés par l'estimation.
-const WINDOW_DAYS = Math.max(30, Number(process.env.DATA_DAYS ?? 60));
+const WINDOW_DAYS = Math.max(30, Number(process.env.DATA_DAYS ?? 90));
 // Diagnostic du plancher d'estimation (exposé via /api/debug).
 let estimateDiag: Record<string, number> = {};
 let dataCache: {
