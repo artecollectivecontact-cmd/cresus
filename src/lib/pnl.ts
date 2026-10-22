@@ -36,7 +36,7 @@ import { sampleShopifyEntries, sampleMetaEntries } from "./sample-data";
 const REPORT_TZ = process.env.REPORT_TZ || "Europe/Paris";
 
 // Délai max accordé à chaque connecteur (garde la page sous le timeout Vercel).
-const CONNECTOR_TIMEOUT_MS = Number(process.env.CONNECTOR_TIMEOUT_MS ?? 15000);
+const CONNECTOR_TIMEOUT_MS = Number(process.env.CONNECTOR_TIMEOUT_MS ?? 22000);
 
 /** Renvoie `fallback` si la promesse n'a pas résolu avant `ms` millisecondes. */
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -265,6 +265,10 @@ function round2(n: number): number {
 // --- Cache des données (partie lourde : appels API) --------------------------
 
 const DATA_TTL_MS = Number(process.env.DATA_TTL_MS ?? 180_000); // 3 min
+// Fenêtre d'historique récupérée (jours). 60 par défaut ; ajustable via
+// DATA_DAYS. Au-delà, c'est plus lent (plus de commandes à récupérer) ; les
+// jours Printify au-delà du plafond de pages sont comblés par l'estimation.
+const WINDOW_DAYS = Math.max(30, Number(process.env.DATA_DAYS ?? 60));
 // Diagnostic du plancher d'estimation (exposé via /api/debug).
 let estimateDiag: Record<string, number> = {};
 let dataCache: {
@@ -280,7 +284,7 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
 
   const now = new Date();
   const to = new Date(now.getTime() + 60_000);
-  const from = new Date(now.getTime() - 30 * 86_400_000);
+  const from = new Date(now.getTime() - WINDOW_DAYS * 86_400_000);
   const range: DateRange = { from: from.toISOString(), to: to.toISOString() };
 
   // 1) Toutes les sources en parallèle, avec timeout par connecteur.
@@ -922,7 +926,7 @@ export async function buildReport(): Promise<PnLReport> {
   const overhead30 = fixedCostsReport.total;
   const fixedFor = (days: number) => round2((overhead30 * days) / 30);
 
-  const daily = buildDailyBuckets(dated, 30, today, overhead30);
+  const daily = buildDailyBuckets(dated, WINDOW_DAYS, today, overhead30);
 
   const periods: Record<PeriodKey, PeriodSlice> = {
     day: aggregatePeriod(dated, "day", "Aujourd'hui", (d) => d === today, fixedFor(1)),

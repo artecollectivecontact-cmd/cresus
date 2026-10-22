@@ -4,7 +4,7 @@ import { buildReport, buildCustomSlice } from "@/lib/pnl";
 // Rapport P&L en JSON (toutes périodes pré-calculées). Ex: /api/pnl
 // Période perso : /api/pnl?from=2026-09-01&to=2026-09-15 -> renvoie { slice }.
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
