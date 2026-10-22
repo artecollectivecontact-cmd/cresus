@@ -221,10 +221,11 @@ export const shopifyConnector: Connector = {
               ref: o.name,
             });
           }
-          // Port facturé au client : EXCLU du CA par défaut pour s'aligner sur
-          // Hubble (« Ventes » = produits HT, hors port). Réactivable via
-          // COUNT_SHIPPING_REVENUE=1.
-          if (shipping > 0 && process.env.COUNT_SHIPPING_REVENUE === "1") {
+          // Port facturé au client : INCLUS dans le CA par défaut. Le client
+          // paie rarement le port (offert dès 60 €), mais quand il le paie c'est
+          // une vraie recette qui compense une partie du port qu'on règle au POD.
+          // Mettre COUNT_SHIPPING_REVENUE=0 pour l'exclure (ex. coller à Hubble).
+          if (shipping > 0 && process.env.COUNT_SHIPPING_REVENUE !== "0") {
             entries.push({
               id: `shopify:order:${o.id}:shipping-in`,
               source: "shopify",
