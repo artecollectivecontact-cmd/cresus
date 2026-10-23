@@ -268,7 +268,7 @@ const DATA_TTL_MS = Number(process.env.DATA_TTL_MS ?? 180_000); // 3 min
 // Fenêtre d'historique récupérée (jours). 60 par défaut ; ajustable via
 // DATA_DAYS. Au-delà, c'est plus lent (plus de commandes à récupérer) ; les
 // jours Printify au-delà du plafond de pages sont comblés par l'estimation.
-const WINDOW_DAYS = Math.max(30, Number(process.env.DATA_DAYS ?? 90));
+const WINDOW_DAYS = Math.max(7, Number(process.env.DATA_DAYS ?? 30));
 // Diagnostic du plancher d'estimation (exposé via /api/debug).
 let estimateDiag: Record<string, number> = {};
 let dataCache: {
@@ -278,15 +278,36 @@ let dataCache: {
   demo: boolean;
 } | null = null;
 
-/** Récupère + normalise 30 jours d'écritures (avec cache mémoire). */
+/** Fenêtre récente par défaut (avec cache mémoire), rapide à charger. */
 async function getData(): Promise<NonNullable<typeof dataCache>> {
   if (dataCache && Date.now() - dataCache.at < DATA_TTL_MS) return dataCache;
-
   const now = new Date();
   const to = new Date(now.getTime() + 60_000);
   const from = new Date(now.getTime() - WINDOW_DAYS * 86_400_000);
-  const range: DateRange = { from: from.toISOString(), to: to.toISOString() };
+  const data = await buildNormalized({ from: from.toISOString(), to: to.toISOString() });
+  dataCache = { at: Date.now(), ...data };
+  return dataCache;
+}
 
+type NormalizedBundle = { normalized: NormalizedEntry[]; statuses: SourceStatus[]; demo: boolean };
+
+// Cache des périodes PERSO (mois anciens), chargées à la demande.
+const rangeCache = new Map<string, { at: number; data: NormalizedBundle }>();
+async function normalizedForRange(range: DateRange): Promise<NormalizedBundle> {
+  const key = `${range.from}|${range.to}`;
+  const hit = rangeCache.get(key);
+  if (hit && Date.now() - hit.at < DATA_TTL_MS) return hit.data;
+  const data = await buildNormalized(range);
+  rangeCache.set(key, { at: Date.now(), data });
+  if (rangeCache.size > 12) {
+    const oldest = rangeCache.keys().next().value;
+    if (oldest) rangeCache.delete(oldest);
+  }
+  return data;
+}
+
+/** Récupère + normalise les écritures d'une fenêtre donnée (sans cache). */
+async function buildNormalized(range: DateRange): Promise<NormalizedBundle> {
   // 1) Toutes les sources en parallèle, avec timeout par connecteur.
   const raw: LedgerEntry[] = [];
   const statuses: SourceStatus[] = [];
@@ -464,8 +485,7 @@ async function getData(): Promise<NonNullable<typeof dataCache>> {
     estimateDiag = { orders: nTotal, zeroBase: nZero, covered: nCovered, estimated: estimatedCount, coveredKeys: coveredKeys.size, cogsRate: ESTIMATED_COGS_RATE, fulRate: ESTIMATED_FULFILLMENT_RATE };
   }
 
-  dataCache = { at: Date.now(), normalized, statuses, demo };
-  return dataCache;
+  return { normalized, statuses, demo };
 }
 
 /** Normalise une référence de commande pour le matching (#4683 -> 4683). */
@@ -964,25 +984,36 @@ export async function buildReport(): Promise<PnLReport> {
 }
 
 /**
- * Agrège une période PERSO définie par deux jours (YYYY-MM-DD) inclus, à partir
- * des mêmes données mises en cache. Réutilise l'agrégation standard (KPI, par
- * source, TVA, frais de conversion) — utilisé par /api/pnl?from=&to=.
+ * Agrège une période PERSO définie par deux jours (YYYY-MM-DD) inclus. Récupère
+ * les données de CETTE plage À LA DEMANDE (on ne charge pas tout l'historique au
+ * démarrage) — utilisé par /api/pnl?from=&to= pour comparer des mois anciens.
+ * Renvoie l'agrégat + les buckets journaliers de la plage (graphe & détail).
  */
-export async function buildCustomSlice(fromDay: string, toDay: string): Promise<PeriodSlice> {
-  const { normalized } = await getData();
-  const dated: Dated[] = normalized.map((e) => ({ e, day: localParts(e.occurredAt).day }));
+export async function buildCustomSlice(
+  fromDay: string,
+  toDay: string
+): Promise<{ slice: PeriodSlice; daily: PnLBucket[]; sources: SourceStatus[]; fixedCosts: FixedCostsReport }> {
   const [lo, hi] = fromDay <= toDay ? [fromDay, toDay] : [toDay, fromDay];
-  // Charges fixes proratisées sur la durée de la plage (30 j de référence).
   const d0 = Date.parse(`${lo}T00:00:00Z`);
   const d1 = Date.parse(`${hi}T00:00:00Z`);
   const days = Math.max(1, Math.round((d1 - d0) / 86_400_000) + 1);
-  const today = todayLocal();
-  const win30 = shiftDay(today, -29);
-  const overhead30 = overheadFromQonto(dated, (d) => d >= win30);
-  const fixed = round2((overhead30 * days) / 30);
+
+  // Fenêtre élargie d'un jour de chaque côté (fuseau) pour ne rien perdre.
+  const fetchFrom = new Date(d0 - 86_400_000).toISOString();
+  const fetchTo = new Date(d1 + 2 * 86_400_000).toISOString();
+  const { normalized, statuses } = await normalizedForRange({ from: fetchFrom, to: fetchTo });
+  const dated: Dated[] = normalized.map((e) => ({ e, day: localParts(e.occurredAt).day }));
+
+  // Charges fixes de la plage (Qonto sur la plage, proratisé si < 30 j).
+  const fx = buildFixedCosts(dated, (d) => d >= lo && d <= hi);
+  const fixed = round2(fx.total); // déjà sur la plage
+  const fixedPerDayForBuckets = round2(fixed); // pour buildDailyBuckets (prorata interne /30)
+
   const slice = aggregatePeriod(dated, "custom", "Période perso", (d) => d >= lo && d <= hi, fixed);
   slice.range = { from: lo, to: hi };
-  return slice;
+  // Buckets journaliers de la plage (pour le graphe et le détail par jour).
+  const daily = buildDailyBuckets(dated, days, hi, (fixedPerDayForBuckets * 30) / days);
+  return { slice, daily, sources: statuses, fixedCosts: { ...fx, perDay: round2(fixed / days) } };
 }
 
 function buildReconciliation(

@@ -16,8 +16,8 @@ export async function GET(req: NextRequest) {
       if (!DAY_RE.test(from) || !DAY_RE.test(to)) {
         return NextResponse.json({ error: "Dates invalides (format YYYY-MM-DD)" }, { status: 400 });
       }
-      const slice = await buildCustomSlice(from, to);
-      return NextResponse.json({ slice });
+      const custom = await buildCustomSlice(from, to);
+      return NextResponse.json(custom); // { slice, daily, sources, fixedCosts }
     }
     const report = await buildReport();
     return NextResponse.json(report);

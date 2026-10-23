@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { PnLReport, PeriodSlice } from "@/lib/types";
+import type { PnLReport, PeriodSlice, PnLBucket } from "@/lib/types";
 import { LoadingScreen } from "./LoadingScreen";
 import {
   PeriodTabs,
@@ -34,6 +34,7 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [customSlice, setCustomSlice] = useState<PeriodSlice | null>(null);
+  const [customDaily, setCustomDaily] = useState<PnLBucket[]>([]);
   const [customLoading, setCustomLoading] = useState(false);
 
   useEffect(() => {
@@ -84,7 +85,10 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
       .then(async (res) => {
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        if (!cancelled) setCustomSlice(data.slice as PeriodSlice);
+        if (!cancelled) {
+          setCustomSlice(data.slice as PeriodSlice);
+          setCustomDaily((data.daily as PnLBucket[]) ?? []);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e.message || "Erreur période perso");
@@ -122,15 +126,42 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
   const slice: PeriodSlice | null = isCustom ? customSlice : report.periods[period];
   const range = isCustom && customFrom && customTo ? { from: customFrom, to: customTo } : null;
 
-  // Jour de détail : borné à la fenêtre affichée.
-  const windowDays = range
-    ? report.daily.filter((d) => d.key >= range.from && d.key <= range.to)
-    : report.daily;
+  // Les buckets journaliers affichés : ceux du mois chargé à la demande en perso,
+  // sinon la fenêtre récente par défaut.
+  const chartDaily = isCustom ? customDaily : report.daily;
+  const windowDays = range ? chartDaily.filter((d) => d.key >= range.from && d.key <= range.to) : chartDaily;
   const detailKey = selectedDay ?? windowDays[windowDays.length - 1]?.key ?? null;
-  const detailBucket = report.daily.find((d) => d.key === detailKey) ?? null;
+  const detailBucket = chartDaily.find((d) => d.key === detailKey) ?? null;
 
-  const minDay = report.daily[0]?.key ?? "";
+  // Sélecteur perso : on autorise ~12 mois en arrière (chargement à la demande).
   const maxDay = report.daily[report.daily.length - 1]?.key ?? "";
+  const minDay = (() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 12);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  // Boutons de mois (12 derniers), pour comparer les mois rapidement.
+  const monthBtns = (() => {
+    const list: { label: string; from: string; to: string }[] = [];
+    const now = new Date();
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const from = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+      const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      const toRaw = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, "0")}-${String(last.getDate()).padStart(2, "0")}`;
+      const to = toRaw > maxDay ? maxDay : toRaw; // mois en cours : borne à aujourd'hui
+      const label = d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+      list.push({ label: i === 0 ? `${label} (en cours)` : label, from, to });
+    }
+    return list;
+  })();
+  const selectMonth = (from: string, to: string) => {
+    setCustomFrom(from);
+    setCustomTo(to);
+    setSelectedDay(null);
+    setPeriod("custom");
+  };
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-6" style={{ paddingInline: "max(16px, env(safe-area-inset-left))" }}>
@@ -209,7 +240,29 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
         )}
       </div>
 
-      {slice ? (
+      {/* Boutons de mois — comparer les mois (chargés à la demande) */}
+      <div className="mb-4 flex flex-wrap gap-2">
+        {monthBtns.map((m) => {
+          const activeMonth = isCustom && customFrom === m.from && customTo === m.to;
+          return (
+            <button
+              key={m.from}
+              onClick={() => selectMonth(m.from, m.to)}
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                activeMonth ? "border-accent bg-accent text-ink" : "border-line bg-panel text-muted hover:text-white"
+              }`}
+            >
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {isCustom && customLoading ? (
+        <div className="mb-5 rounded-xl border border-line bg-panel p-6 text-center text-sm text-muted">
+          Chargement de la période… (les mois anciens sont récupérés à la demande, ça peut prendre quelques secondes)
+        </div>
+      ) : slice ? (
         <>
           {/* KPI de la période */}
           <div className="mb-5">
@@ -225,7 +278,7 @@ export function DashboardClient({ authEnabled }: { authEnabled: boolean }) {
       {/* Graphe (suit la période) — pleine largeur, cliquable */}
       <div className="mb-4">
         <DailyChart
-          daily={report.daily}
+          daily={chartDaily}
           currency={report.currency}
           usdPerEur={report.usdPerEur}
           period={period}
