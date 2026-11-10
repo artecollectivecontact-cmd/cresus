@@ -36,7 +36,7 @@ import { sampleShopifyEntries, sampleMetaEntries } from "./sample-data";
 const REPORT_TZ = process.env.REPORT_TZ || "Europe/Paris";
 
 // Délai max accordé à chaque connecteur (garde la page sous le timeout Vercel).
-const CONNECTOR_TIMEOUT_MS = Number(process.env.CONNECTOR_TIMEOUT_MS ?? 22000);
+const CONNECTOR_TIMEOUT_MS = Number(process.env.CONNECTOR_TIMEOUT_MS ?? 35000);
 
 /** Renvoie `fallback` si la promesse n'a pas résolu avant `ms` millisecondes. */
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {

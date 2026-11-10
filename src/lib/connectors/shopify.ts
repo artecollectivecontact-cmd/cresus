@@ -92,20 +92,46 @@ interface GqlOrder {
   transactions: { fees: TxFee[] }[];
 }
 
-async function gql<T>(token: string, query: string, variables: object): Promise<T> {
-  const res = await fetch(`https://${shop()}/admin/api/${API_VERSION}/graphql.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": token,
-    },
-    body: JSON.stringify({ query, variables }),
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`Shopify HTTP ${res.status}`);
-  const json = (await res.json()) as { data?: T; errors?: unknown };
-  if (json.errors) throw new Error(`Shopify GraphQL: ${JSON.stringify(json.errors)}`);
-  return json.data as T;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+interface ThrottleStatus {
+  maximumAvailable?: number;
+  currentlyAvailable?: number;
+  restoreRate?: number;
+}
+
+/** Appel GraphQL avec gestion du throttling Shopify (attente + réessai). */
+async function gql<T>(
+  token: string,
+  query: string,
+  variables: object
+): Promise<{ data: T; throttle?: ThrottleStatus }> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const res = await fetch(`https://${shop()}/admin/api/${API_VERSION}/graphql.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
+      body: JSON.stringify({ query, variables }),
+      cache: "no-store",
+    });
+    if (res.status === 429) {
+      await sleep(2000);
+      continue;
+    }
+    if (!res.ok) throw new Error(`Shopify HTTP ${res.status}`);
+    const json = (await res.json()) as {
+      data?: T;
+      errors?: unknown;
+      extensions?: { cost?: { throttleStatus?: ThrottleStatus } };
+    };
+    const throttled = JSON.stringify(json.errors ?? "").includes("Throttled") || (json.errors && !json.data);
+    if (throttled) {
+      await sleep(2500);
+      continue;
+    }
+    if (json.errors) throw new Error(`Shopify GraphQL: ${JSON.stringify(json.errors)}`);
+    return { data: json.data as T, throttle: json.extensions?.cost?.throttleStatus };
+  }
+  throw new Error("Shopify: throttling persistant");
 }
 
 const ORDERS_QUERY = `
@@ -123,7 +149,7 @@ const ORDERS_QUERY = `
         totalShippingPriceSet { shopMoney { amount currencyCode } }
         totalRefundedSet { shopMoney { amount currencyCode } }
         shippingAddress { countryCodeV2 }
-        transactions(first: 10) {
+        transactions(first: 5) {
           fees {
             amount { amount currencyCode }
             type
@@ -163,10 +189,31 @@ export const shopifyConnector: Connector = {
       const entries: LedgerEntry[] = [];
       const search = `created_at:>=${range.from} created_at:<${range.to}`;
       let cursor: string | null = null;
+      let partial = false;
+      let pages = 0;
 
       do {
-        const data: { orders: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: GqlOrder[] } } =
-          await gql(token, ORDERS_QUERY, { query: search, cursor });
+        let data: { orders: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: GqlOrder[] } };
+        let throttle: ThrottleStatus | undefined;
+        try {
+          const r = await gql<typeof data>(token, ORDERS_QUERY, { query: search, cursor });
+          data = r.data;
+          throttle = r.throttle;
+        } catch (err) {
+          // Throttle persistant / erreur en cours de pagination : on garde les
+          // pages déjà récupérées plutôt que de tout perdre.
+          if (entries.length === 0) throw err;
+          partial = true;
+          break;
+        }
+        pages++;
+        // Pacing : si le budget de coût Shopify est bas, on attend qu'il se
+        // recharge avant la page suivante (évite le throttle).
+        if (throttle && (throttle.currentlyAvailable ?? 1000) < 300) {
+          const need = 300 - (throttle.currentlyAvailable ?? 0);
+          const rate = throttle.restoreRate || 100;
+          await sleep(Math.min(3000, Math.ceil((need / rate) * 1000)));
+        }
         for (const o of data.orders.nodes) {
           const ccy = o.currentSubtotalPriceSet.shopMoney.currencyCode;
           const country = o.shippingAddress?.countryCodeV2 ?? undefined;
@@ -280,7 +327,8 @@ export const shopifyConnector: Connector = {
         cursor = data.orders.pageInfo.hasNextPage ? data.orders.pageInfo.endCursor : null;
       } while (cursor);
 
-      return { entries, state: "live", detail: `${entries.length} écritures` };
+      const detail = `${entries.length} écritures (${pages} pages)${partial ? " ⚠️ partiel (throttle)" : ""}`;
+      return { entries, state: "live", detail };
     } catch (e) {
       const msg = (e as Error).message;
       // Accès refusé / non autorisé : le token en cache est peut-être périmé
